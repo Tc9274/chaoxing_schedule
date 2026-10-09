@@ -9,6 +9,7 @@ import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
 import android.view.View.MeasureSpec
+import kotlin.math.abs
 
 /**
  * 自定义课表视图：左侧时间轴 + 顶部星期表头 + 课程块网格。
@@ -43,6 +44,16 @@ class ScheduleView @JvmOverloads constructor(
     private var locY = 0.78f            // 位置在块内垂直位置比例
     private var maxSectionCount = 0
 
+    // 按周切换：当前查看周
+    private var currentWeek = 0
+    private var maxWeek = 0
+    var onWeekChanged: ((Int) -> Unit)? = null
+
+    // 手势检测
+    private var downX = 0f
+    private var downY = 0f
+    private var isDragging = false
+
     private val bgPaint = Paint().apply { color = Color.WHITE }
     private val gridPaint = Paint().apply { color = 0xFFE0E0E0.toInt(); style = Paint.Style.STROKE; strokeWidth = 1f }
     private val headerPaint = Paint().apply {
@@ -72,10 +83,13 @@ class ScheduleView @JvmOverloads constructor(
 
     init { isClickable = true }
 
-    fun setData(schedule: ScheduleData, today: Int) {
+    /** week 不为空时，强制以该周作为当前查看周（用于滑动切周拉取的数据）。 */
+    fun setData(schedule: ScheduleData, today: Int, week: Int? = null) {
         data = schedule
         todayDay = today
         maxSectionCount = schedule.sectionTimes.size
+        maxWeek = schedule.maxWeek.coerceAtLeast(1)
+        currentWeek = (week ?: schedule.currentWeek).coerceIn(1, maxWeek)
         requestLayout()
         invalidate()
     }
@@ -119,16 +133,58 @@ class ScheduleView @JvmOverloads constructor(
     fun keyOf(lesson: Lesson): String = "${lesson.dayOfWeek}|${lesson.beginSection}|${lesson.course}"
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.action == MotionEvent.ACTION_UP) {
-            for ((rect, lesson) in lessonRects) {
-                if (rect.contains(event.x, event.y)) {
-                    onLessonClick?.invoke(lesson)
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.x; downY = event.y
+                isDragging = false
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.x - downX
+                val dy = event.y - downY
+                // 判定为水平滑动（横向位移明显大于纵向），切换周；否则视为点击
+                if (!isDragging && abs(dx) > dp(12f) && abs(dx) > abs(dy)) {
+                    isDragging = true
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (isDragging) {
+                    val dx = event.x - downX
+                    if (abs(dx) >= dp(60f)) {
+                        if (dx > 0) prevWeek() else nextWeek()
+                    }
+                    isDragging = false
                     return true
                 }
+                for ((rect, lesson) in lessonRects) {
+                    if (rect.contains(event.x, event.y)) {
+                        onLessonClick?.invoke(lesson)
+                        return true
+                    }
+                }
+                return true
             }
+            MotionEvent.ACTION_CANCEL -> { isDragging = false; return true }
         }
         return super.onTouchEvent(event)
     }
+
+    private fun nextWeek() {
+        if (currentWeek >= maxWeek) return
+        currentWeek++
+        onWeekChanged?.invoke(currentWeek)
+        invalidate()
+    }
+
+    private fun prevWeek() {
+        if (currentWeek <= 1) return
+        currentWeek--
+        onWeekChanged?.invoke(currentWeek)
+        invalidate()
+    }
+
+    /** 解析 weeks 字符串（如 "1-16周"、"1-8,10-20周"、"5,7周"）为周次集合。 */
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -163,7 +219,7 @@ class ScheduleView @JvmOverloads constructor(
         canvas.drawLine(timeW, height.toFloat(), width.toFloat(), height.toFloat(), gridPaint)
         canvas.drawLine(timeW, headerH, timeW, height.toFloat(), gridPaint)
 
-        // 课程块
+        // 课程块（接口已按周返回，显示该周全部课程）
         lessonRects.clear()
         for (lesson in d.lessons) {
             if (lesson.dayOfWeek < 1 || lesson.dayOfWeek > 7) continue

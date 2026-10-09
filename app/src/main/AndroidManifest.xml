@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <application
         android:label="课表"
@@ -21,6 +23,20 @@
         <activity
             android:name=".SettingsActivity"
             android:exported="false" />
+
+        <!-- 每天 8:00 后台刷新 -->
+        <receiver
+            android:name=".DailyRefreshReceiver"
+            android:exported="false" />
+
+        <!-- 手机重启后重新调度定时刷新 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

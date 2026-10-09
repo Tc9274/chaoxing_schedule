@@ -55,9 +55,10 @@ object ScheduleApi {
     private val UA = ("Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120 Mobile Safari/537.36")
 
-    /** 调用接口，返回原始 JSON 字符串。失败抛 IOException。 */
-    fun fetchRaw(uuid: String): String {
-        val url = URL("$API_BASE?curriculumUuid=$uuid&curTime=${System.currentTimeMillis()}")
+    /** 调用接口，返回原始 JSON 字符串。week 不为空时请求指定周的课表。失败抛 IOException。 */
+    fun fetchRaw(uuid: String, week: Int? = null): String {
+        val url = URL("$API_BASE?curriculumUuid=$uuid&curTime=${System.currentTimeMillis()}" +
+                if (week != null) "&week=$week" else "")
         val conn = url.openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "GET"

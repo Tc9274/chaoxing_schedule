@@ -6,9 +6,11 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.widget.EditText
@@ -18,7 +20,6 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import java.io.IOException
 import java.util.Calendar
 
 class MainActivity : Activity() {
@@ -27,7 +28,11 @@ class MainActivity : Activity() {
     private lateinit var statusView: TextView
     private lateinit var scheduleView: ScheduleView
     private val handler = Handler(Looper.getMainLooper())
-    private var infoPrefix = ""
+    private val prefs by lazy { getSharedPreferences("schedule", MODE_PRIVATE) }
+    private var infoBase = ""
+    private var viewWeek = 0
+    private var lastShownWeek = 0
+    private var maxWeek = 0
     private var lastUpdateMs = 0L
     private var currentData: ScheduleData? = null
     private var currentChangeKeys: Set<String> = emptySet()
@@ -35,11 +40,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        // 顶部条：第一行 小标题 + 两个小圆角按钮，第二行 灰色信息
+        // 顶部条
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(12), dp(14), dp(4))
@@ -75,6 +78,14 @@ class MainActivity : Activity() {
 
         scheduleView = ScheduleView(this)
         scheduleView.onLessonClick = { lesson -> showLessonDialog(lesson) }
+        scheduleView.onWeekChanged = { week ->
+            if (week != viewWeek) {
+                viewWeek = week
+                prefs.edit().putInt("last_view_week", week).apply()
+                updateStatus()
+                if (!showCachedWeek(week)) fetchWeek(week)
+            }
+        }
 
         root.addView(header, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -87,35 +98,71 @@ class MainActivity : Activity() {
 
         setContentView(root)
 
-        // 先展示本地缓存（若有），再后台刷新
-        val cached = getSharedPreferences("schedule", MODE_PRIVATE).getString("json", null)
-        if (cached != null) {
-            try {
-                lastUpdateMs = getSharedPreferences("schedule", MODE_PRIVATE).getLong("last_update_ms", 0)
-                val d = ScheduleApi.parse(cached)
-                render(d)
-                startTicker()
-            } catch (e: Exception) {
-                // 缓存损坏则忽略
-            }
+        // 调度每天 8:00 后台刷新，并尝试申请精确闹钟权限
+        DailyRefreshReceiver.scheduleDaily(this)
+        ensureExactAlarmPermission()
+
+        // 有周缓存则直接显示上次查看的周；否则首次全量获取 1~20 周
+        val hasAny = prefs.all.keys.any { it.startsWith("weekCache_") }
+        if (hasAny) {
+            showCachedWeek(getCachedViewWeek())
+            startTicker()
+        } else {
+            fetchAllWeeksInitial()
         }
-        refresh()
     }
 
-    /** 后台线程抓取，成功后回主线程渲染并写入缓存。 */
-    private fun refresh() {
-        statusView.text = "加载中…"
+    /** 首次启动：依次拉取 1~20 周全部缓存。 */
+    private fun fetchAllWeeksInitial() {
+        statusView.text = "首次获取课表 0/20…"
         val uuid = getUuid()
         Thread {
+            var realWeek = 0
+            var ok = 0
+            for (w in 1..20) {
+                try {
+                    val raw = ScheduleApi.fetchRaw(uuid, w)
+                    prefs.edit().putString("weekCache_$w", raw).apply()
+                    ok++
+                    if (realWeek == 0) realWeek = ScheduleApi.parse(raw).currentWeek
+                } catch (e: Exception) {
+                    // 单周失败跳过
+                }
+                val p = ok
+                handler.post { statusView.text = "首次获取课表 $p/20…" }
+            }
+            val week = realWeek.takeIf { it > 0 } ?: getCachedViewWeek()
+            prefs.edit().putInt("last_view_week", week).apply()
+            handler.post {
+                showCachedWeek(week)
+                startTicker()
+                Toast.makeText(this, "首次课表获取完成", Toast.LENGTH_SHORT).show()
+            }
+        }.start()
+    }
+
+    /** 手动刷新：只刷新当前正在看的这一周，并计算变更强调。 */
+    private fun refresh() {
+        val week = viewWeek.takeIf { it > 0 } ?: getCachedViewWeek()
+        statusView.text = "刷新第${week}周…"
+        val uuid = getUuid()
+        val baseRaw = prefs.getString("base_json", null)
+        Thread {
             try {
-                val raw = ScheduleApi.fetchRaw(uuid)
+                val raw = ScheduleApi.fetchRaw(uuid, week)
                 val data = ScheduleApi.parse(raw)
-                currentChangeKeys = computeChanges(cachedData(), data)
+                val old = try { baseRaw?.let { ScheduleApi.parse(it) } } catch (e: Exception) { null }
+                currentChangeKeys = computeChanges(old, data)
+                prefs.edit()
+                    .putString("weekCache_$week", raw)
+                    .putString("base_json", raw)
+                    .putInt("last_view_week", week)
+                    .apply()
                 lastUpdateMs = System.currentTimeMillis()
-                getSharedPreferences("schedule", MODE_PRIVATE)
-                    .edit().putString("json", raw).putLong("last_update_ms", lastUpdateMs).apply()
+                viewWeek = week
+                lastShownWeek = week
                 handler.post {
-                    render(data)
+                    renderWeek(data, week, true)
                     startTicker()
                     Toast.makeText(this, "更新成功（${data.lessonCount} 节）", Toast.LENGTH_SHORT).show()
                 }
@@ -128,26 +175,69 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun render(data: ScheduleData) {
+    /** 切周无缓存时：请求该周并缓存。 */
+    private fun fetchWeek(week: Int) {
+        statusView.text = "加载第${week}周…"
+        val uuid = getUuid()
+        Thread {
+            try {
+                val raw = ScheduleApi.fetchRaw(uuid, week)
+                val data = ScheduleApi.parse(raw)
+                prefs.edit().putString("weekCache_$week", raw).putInt("last_view_week", week).apply()
+                handler.post { renderWeek(data, week, false) }
+            } catch (e: Exception) {
+                handler.post {
+                    Toast.makeText(this, "获取第${week}周失败：${e.message ?: "网络错误"}", Toast.LENGTH_SHORT).show()
+                    viewWeek = lastShownWeek
+                    updateStatus()
+                }
+            }
+        }.start()
+    }
+
+    /** 从缓存显示某周；有缓存并解析成功返回 true，否则 false。 */
+    private fun showCachedWeek(week: Int): Boolean {
+        val raw = prefs.getString("weekCache_$week", null) ?: return false
+        val d = try { ScheduleApi.parse(raw) } catch (e: Exception) { null }
+        if (d == null) return false
+        renderWeek(d, week, false)
+        return true
+    }
+
+    /** 渲染某周课表。emphasize=true 时应用变更强调（手动刷新）。 */
+    private fun renderWeek(data: ScheduleData, week: Int, emphasize: Boolean) {
         currentData = data
-        scheduleView.setData(data, todayDayOfWeek())
+        scheduleView.setData(data, todayDayOfWeek(), week)
         applyDisplayStyle()
         scheduleView.setDisplayMaps(readStringMap("nameMap_"), readStringMap("locMap_"),
             readStringMap("oneName_"), readStringMap("oneLoc_"))
-        scheduleView.setChangeKeys(currentChangeKeys)
+        scheduleView.setChangeKeys(if (emphasize) currentChangeKeys else emptySet())
         val campus = if (data.campus.isNotEmpty()) " · ${data.campus}" else ""
-        infoPrefix = "${data.schoolYear}学年第${data.semester}学期$campus · ${metaText(data)}"
+        infoBase = "${data.schoolYear}学年第${data.semester}学期$campus"
+        viewWeek = week
+        lastShownWeek = week
+        maxWeek = data.maxWeek
         updateStatus()
     }
 
-    private fun metaText(data: ScheduleData): String =
-        "第${data.currentWeek}周/共${data.maxWeek}周"
+    private fun getCachedViewWeek(): Int {
+        val saved = prefs.getInt("last_view_week", 0)
+        if (saved > 0) return saved
+        var max = 0
+        for (k in prefs.all.keys) {
+            if (k.startsWith("weekCache_")) {
+                k.removePrefix("weekCache_").toIntOrNull()?.let { if (it > max) max = it }
+            }
+        }
+        return max
+    }
 
-    /** 顶部信息行：学期周次 + 距离上次更新。 */
+    /** 顶部信息行：学期 + 当前查看周 + 距离上次更新。 */
     private fun updateStatus() {
+        val week = "第${viewWeek}周/共${maxWeek}周"
         statusView.text = if (lastUpdateMs > 0)
-            "$infoPrefix · 更新于 ${relTime(lastUpdateMs)}"
-        else infoPrefix
+            "$infoBase · $week · 更新于 ${relTime(lastUpdateMs)}"
+        else "$infoBase · $week"
     }
 
     /** 相对时间：刚刚 / N分钟前 / N小时前 / 具体时间。 */
@@ -177,20 +267,31 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 申请精确闹钟权限（Android 12+，用于每天 8:00 准点刷新）。 */
+    private fun ensureExactAlarmPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val am = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
+        if (am.canScheduleExactAlarms()) return
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM))
+        } catch (e: Exception) {
+            // 用户可能已拒绝或系统不支持，忽略
+        }
+    }
+
     /** 课程标识：星期|开始节次|课名。 */
     private fun keyOf(lesson: Lesson): String = "${lesson.dayOfWeek}|${lesson.beginSection}|${lesson.course}"
 
     /** 从设置读取显示参数并应用到课表。 */
     private fun applyDisplayStyle() {
-        val p = getSharedPreferences("schedule", MODE_PRIVATE)
         scheduleView.setDisplayStyle(
-            p.getFloat("font_course", dp(12).toFloat()),
-            p.getFloat("font_loc", dp(10).toFloat()),
-            p.getFloat("font_header", dp(15).toFloat()),
-            p.getFloat("header_h", dp(48).toFloat()),
-            p.getFloat("cell_h", 0f),
-            p.getFloat("name_y", 0.33f),
-            p.getFloat("loc_y", 0.78f)
+            prefs.getFloat("font_course", dp(12).toFloat()),
+            prefs.getFloat("font_loc", dp(10).toFloat()),
+            prefs.getFloat("font_header", dp(15).toFloat()),
+            prefs.getFloat("header_h", dp(48).toFloat()),
+            prefs.getFloat("cell_h", 0f),
+            prefs.getFloat("name_y", 0.33f),
+            prefs.getFloat("loc_y", 0.78f)
         )
     }
 
@@ -199,9 +300,9 @@ class MainActivity : Activity() {
         if (currentData != null) applyDisplayStyle()
     }
 
-    /** 读取上次抓取缓存（变更对比基准）。 */
+    /** 变更对比基准（上次手动刷新保存的当前周）。 */
     private fun cachedData(): ScheduleData? {
-        val raw = getSharedPreferences("schedule", MODE_PRIVATE).getString("json", null) ?: return null
+        val raw = prefs.getString("base_json", null) ?: return null
         return try { ScheduleApi.parse(raw) } catch (e: Exception) { null }
     }
 
@@ -221,52 +322,43 @@ class MainActivity : Activity() {
     }
 
     private fun isIgnored(k: String, loc: String): Boolean =
-        getSharedPreferences("schedule", MODE_PRIVATE)
-            .getStringSet("ignored_changes", emptySet())?.contains("$k@$loc") ?: false
+        prefs.getStringSet("ignored_changes", emptySet())?.contains("$k@$loc") ?: false
 
     private fun ignoreChange(k: String, loc: String) {
-        val set = getSharedPreferences("schedule", MODE_PRIVATE)
-            .getStringSet("ignored_changes", emptySet())?.toMutableSet() ?: mutableSetOf()
+        val set = prefs.getStringSet("ignored_changes", emptySet())?.toMutableSet() ?: mutableSetOf()
         set.add("$k@$loc")
-        getSharedPreferences("schedule", MODE_PRIVATE)
-            .edit().putStringSet("ignored_changes", set).apply()
+        prefs.edit().putStringSet("ignored_changes", set).apply()
     }
 
     /** 取消该课名所有节的强调（持久化）。 */
     private fun ignoreAllFor(lesson: Lesson) {
-        val set = getSharedPreferences("schedule", MODE_PRIVATE)
-            .getStringSet("ignored_changes", emptySet())?.toMutableSet() ?: mutableSetOf()
+        val set = prefs.getStringSet("ignored_changes", emptySet())?.toMutableSet() ?: mutableSetOf()
         currentData?.lessons?.filter { it.course == lesson.course }?.forEach {
             set.add("${keyOf(it)}@${it.location}")
         }
-        getSharedPreferences("schedule", MODE_PRIVATE)
-            .edit().putStringSet("ignored_changes", set).apply()
+        prefs.edit().putStringSet("ignored_changes", set).apply()
     }
 
     private fun readStringMap(prefix: String): Map<String, String> =
-        getSharedPreferences("schedule", MODE_PRIVATE).all.entries
-            .mapNotNull { (k, v) ->
-                if (k.startsWith(prefix) && v is String) k.removePrefix(prefix) to v as String else null
-            }.toMap()
+        prefs.all.entries.mapNotNull { (k, v) ->
+            if (k.startsWith(prefix) && v is String) k.removePrefix(prefix) to v as String else null
+        }.toMap()
 
     private fun currentDisplayName(lesson: Lesson): String {
         val key = keyOf(lesson)
-        val one = getSharedPreferences("schedule", MODE_PRIVATE).getString("oneName_$key", null)
+        val one = prefs.getString("oneName_$key", null)
         if (one != null) return one
-        return getSharedPreferences("schedule", MODE_PRIVATE).getString("nameMap_${lesson.course}", null)
-            ?: lesson.course
+        return prefs.getString("nameMap_${lesson.course}", null) ?: lesson.course
     }
 
     private fun currentDisplayLoc(lesson: Lesson): String {
         val key = keyOf(lesson)
-        val one = getSharedPreferences("schedule", MODE_PRIVATE).getString("oneLoc_$key", null)
+        val one = prefs.getString("oneLoc_$key", null)
         if (one != null) return one
-        return getSharedPreferences("schedule", MODE_PRIVATE).getString("locMap_${lesson.location}", null)
-            ?: lesson.location
+        return prefs.getString("locMap_${lesson.location}", null) ?: lesson.location
     }
 
     private fun saveDisplayRule(lesson: Lesson, nameText: String, locText: String, applyAll: Boolean) {
-        val prefs = getSharedPreferences("schedule", MODE_PRIVATE)
         val key = keyOf(lesson)
         val ed = prefs.edit()
         if (applyAll) {
@@ -283,12 +375,12 @@ class MainActivity : Activity() {
         ed.apply()
     }
 
-    /** 设置变更后刷新渲染。 */
+    /** 显示名/强调设置变更后刷新渲染。 */
     private fun refreshDisplay() {
         val d = currentData ?: return
         scheduleView.setDisplayMaps(readStringMap("nameMap_"), readStringMap("locMap_"),
             readStringMap("oneName_"), readStringMap("oneLoc_"))
-        scheduleView.setChangeKeys(computeChanges(cachedData(), d))
+        scheduleView.setChangeKeys(currentChangeKeys)
         scheduleView.invalidate()
     }
 
@@ -299,14 +391,12 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(16), dp(20), dp(16))
         }
-        // 标题
         root.addView(TextView(this).apply {
             text = currentDisplayName(lesson)
             textSize = 16f
             setTextColor(0xFF17365D.toInt())
             typeface = Typeface.DEFAULT_BOLD
         })
-        // 详情
         val detail = "星期${lesson.dayOfWeek}  第${lesson.beginSection}~${lesson.beginSection + lesson.length - 1}节\n" +
                 "位置：${lesson.location}\n老师：${lesson.teacher.ifEmpty { "—" }}\n周次：${lesson.weeks}"
         root.addView(TextView(this).apply {
@@ -317,15 +407,12 @@ class MainActivity : Activity() {
             setPadding(0, dp(6), 0, dp(12))
         })
         root.addView(divider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)))
-        // 显示名输入
         root.addView(fieldLabel("课程显示名（留空恢复原样）"))
         val nameInput = fieldInput(currentDisplayName(lesson))
         root.addView(nameInput, fieldInputLp())
-        // 位置显示输入
         root.addView(fieldLabel("位置显示（可只写部分，如 教2-A-205）"))
         val locInput = fieldInput(currentDisplayLoc(lesson))
         root.addView(locInput, fieldInputLp())
-        // 作用范围
         val rg = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
         val rbAll = RadioButton(this).apply { text = "全部同名课" }
         val rbOne = RadioButton(this).apply { text = "仅这一节" }
@@ -333,7 +420,6 @@ class MainActivity : Activity() {
         rg.addView(rbOne)
         rbAll.isChecked = true
         root.addView(rg)
-        // 按钮
         val btnLp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         btnLp.setMargins(0, dp(10), 0, 0)
@@ -400,8 +486,7 @@ class MainActivity : Activity() {
 
     /** 读取用户填写的课表 uuid；未填写则用默认课表。 */
     private fun getUuid(): String =
-        getSharedPreferences("schedule", MODE_PRIVATE)
-            .getString("curriculum_uuid", ScheduleApi.DEFAULT_UUID)
+        prefs.getString("curriculum_uuid", ScheduleApi.DEFAULT_UUID)
             ?: ScheduleApi.DEFAULT_UUID
 
     /** 小圆角按钮。 */
