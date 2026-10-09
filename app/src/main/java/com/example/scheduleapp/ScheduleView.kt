@@ -188,13 +188,13 @@ class ScheduleView @JvmOverloads constructor(
             val cx = (left + right) / 2f
             val blockH = lesson.length * cellH   // 跨节块用整块高度，空间充足
             coursePaint.textSize = fontCourse
-            drawFit(canvas, displayName, cx, top + blockH * nameY, coursePaint,
-                right - left - labelPad, blockH * 0.5f, fontCourse * 0.6f)
+            drawFixed(canvas, displayName, cx, top + blockH * nameY, coursePaint,
+                right - left - labelPad, blockH * 0.5f)
             // 教室
             if (displayLoc.isNotEmpty()) {
                 locPaint.textSize = fontLoc
-                drawFit(canvas, displayLoc, cx, top + blockH * locY, locPaint,
-                    right - left - labelPad, blockH * 0.4f, fontLoc * 0.6f)
+                drawFixed(canvas, displayLoc, cx, top + blockH * locY, locPaint,
+                    right - left - labelPad, blockH * 0.4f)
             }
         }
     }
@@ -237,28 +237,17 @@ class ScheduleView @JvmOverloads constructor(
     }
 
     /**
-     * 自适应字号绘制（居中、可换行、优先完整显示）。
-     * 从当前字号向下缩小，直到能在 maxW 宽、maxH 高内放下；降到底限仍放不下才末尾加省略号。
+     * 固定字号绘制（居中、可换行）。所有课程用同一字号，
+     * 换行后仍超出块高则在末行末尾加省略号。
      */
-    private fun drawFit(canvas: Canvas, text: String, cx: Float, cy: Float,
-                        paint: Paint, maxW: Float, maxH: Float, minSize: Float) {
+    private fun drawFixed(canvas: Canvas, text: String, cx: Float, cy: Float,
+                          paint: Paint, maxW: Float, maxH: Float) {
         if (text.isEmpty()) return
-        val baseSize = paint.textSize
-        var size = baseSize
-        var lines: List<String>
-        var maxLines = 1
-        while (true) {
-            paint.textSize = size
-            maxLines = (maxH / (size * 1.15f)).toInt().coerceAtLeast(1)
-            lines = wrapLines(text, maxW, paint)
-            if (lines.size <= maxLines || size <= minSize) break
-            size *= 0.85f
-            if (size < minSize) size = minSize
-        }
-        paint.textSize = size
+        val lineH = paint.textSize * 1.15f
+        val maxLines = (maxH / lineH).toInt().coerceAtLeast(1)
+        val lines = wrapLines(text, maxW, paint)
         val truncated = lines.size > maxLines
         val shown = if (truncated) lines.take(maxLines) else lines
-        val lineH = size * 1.15f
         val fm = paint.fontMetrics
         val top = cy - shown.size * lineH / 2f
         shown.forEachIndexed { i, ln ->
@@ -270,7 +259,6 @@ class ScheduleView @JvmOverloads constructor(
             }
             canvas.drawText(out, cx, top + (i + 1) * lineH - (fm.ascent + fm.descent) / 2f, paint)
         }
-        paint.textSize = baseSize
     }
 
     private fun wrapLines(text: String, maxW: Float, paint: Paint): List<String> {

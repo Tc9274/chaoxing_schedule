@@ -17,12 +17,14 @@ import android.widget.Toast
 import kotlin.math.roundToInt
 
 /**
- * 设置界面：① 填写自己的超星课表链接；② 显示设置（字号/排版）。
+ * 设置界面：① 课表链接；② 显示设置（字号/排版），内嵌实时预览。
  */
 class SettingsActivity : Activity() {
 
     private val prefs by lazy { getSharedPreferences("schedule", MODE_PRIVATE) }
     private val density by lazy { resources.displayMetrics.density }
+    private val preview by lazy { ScheduleView(this) }
+    private var previewData: ScheduleData? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -60,11 +62,11 @@ class SettingsActivity : Activity() {
             setHintTextColor(Color.parseColor("#999999"))
             gravity = Gravity.TOP
             setSingleLine(false)
-            minLines = 3
+            minLines = 1
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
         input.setText(prefs.getString("curriculum_uuid", ScheduleApi.DEFAULT_UUID) ?: ScheduleApi.DEFAULT_UUID)
-        root.addView(input, lpWithMargin(0, 0, 0, dp(10)))
+        root.addView(input, lpWithMargin(0, 0, 0, dp(6)))
         root.addView(Button(this).apply {
             text = "保存链接"
             setOnClickListener {
@@ -92,47 +94,60 @@ class SettingsActivity : Activity() {
         root.addView(spacer())
         root.addView(sectionTitle("显示设置"))
         root.addView(TextView(this).apply {
-            text = "调节课表的字体大小和排版，拖动滑块即实时生效。"
+            text = "拖动滑块实时生效，上方预览可看到效果。"
             textSize = 13f
             setTextColor(Color.parseColor("#666666"))
             setPadding(0, 0, 0, dp(8))
         })
+        // 效果预览（内嵌课表，随滑块实时变化）
+        root.addView(preview, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(300)).apply { setMargins(0, 0, 0, dp(8)) })
+        val raw = prefs.getString("json", null)
+        if (raw != null) {
+            try {
+                previewData = ScheduleApi.parse(raw)
+                preview.setData(previewData!!, todayDayOfWeek())
+                refreshPreview()
+            } catch (e: Exception) {
+                // 无缓存数据则预览留空
+            }
+        }
 
         root.addView(sliderRow("font_course", "课程名字号", 10..22,
-            init = prefs.getFloat("font_course", dp(12).toFloat()),
+            initValue = prefs.getFloat("font_course", dp(12).toFloat()) / density,
             text = { n -> "${n} dp" },
-            save = { n -> prefs.edit().putFloat("font_course", dp(n).toFloat()).apply() }))
+            save = { n -> prefs.edit().putFloat("font_course", dp(n).toFloat()).apply(); refreshPreview() }))
 
         root.addView(sliderRow("font_loc", "位置字号", 8..18,
-            init = prefs.getFloat("font_loc", dp(10).toFloat()),
+            initValue = prefs.getFloat("font_loc", dp(10).toFloat()) / density,
             text = { n -> "${n} dp" },
-            save = { n -> prefs.edit().putFloat("font_loc", dp(n).toFloat()).apply() }))
+            save = { n -> prefs.edit().putFloat("font_loc", dp(n).toFloat()).apply(); refreshPreview() }))
 
         root.addView(sliderRow("font_header", "表头字号", 12..22,
-            init = prefs.getFloat("font_header", dp(15).toFloat()),
+            initValue = prefs.getFloat("font_header", dp(15).toFloat()) / density,
             text = { n -> "${n} dp" },
-            save = { n -> prefs.edit().putFloat("font_header", dp(n).toFloat()).apply() }))
+            save = { n -> prefs.edit().putFloat("font_header", dp(n).toFloat()).apply(); refreshPreview() }))
 
         root.addView(sliderRow("header_h", "表头高度", 40..80,
-            init = prefs.getFloat("header_h", dp(48).toFloat()),
+            initValue = prefs.getFloat("header_h", dp(48).toFloat()) / density,
             text = { n -> "${n} dp" },
-            save = { n -> prefs.edit().putFloat("header_h", dp(n).toFloat()).apply() }))
+            save = { n -> prefs.edit().putFloat("header_h", dp(n).toFloat()).apply(); refreshPreview() }))
 
         root.addView(sliderRow("cell_h", "格子高度", 0..180,
-            init = prefs.getFloat("cell_h", 0f),
+            initValue = prefs.getFloat("cell_h", 0f) / density,
             text = { n -> if (n == 0) "自动适配" else "${n} dp（超高需上下滚动）" },
             save = { n -> prefs.edit().putFloat("cell_h",
-                if (n == 0) 0f else dp(n).toFloat()).apply() }))
+                if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() }))
 
         root.addView(sliderRow("name_y", "课程名上下位置", 0..1000,
-            init = prefs.getFloat("name_y", 0.33f),
+            initValue = prefs.getFloat("name_y", 0.33f) * 1000,
             text = { n -> "${(n / 10)}%" },
-            save = { n -> prefs.edit().putFloat("name_y", n / 1000f).apply() }))
+            save = { n -> prefs.edit().putFloat("name_y", n / 1000f).apply(); refreshPreview() }))
 
         root.addView(sliderRow("loc_y", "位置上下位置", 0..1000,
-            init = prefs.getFloat("loc_y", 0.78f),
+            initValue = prefs.getFloat("loc_y", 0.78f) * 1000,
             text = { n -> "${(n / 10)}%" },
-            save = { n -> prefs.edit().putFloat("loc_y", n / 1000f).apply() }))
+            save = { n -> prefs.edit().putFloat("loc_y", n / 1000f).apply(); refreshPreview() }))
 
         root.addView(spacer())
         root.addView(Button(this).apply {
@@ -150,6 +165,20 @@ class SettingsActivity : Activity() {
         setContentView(scroll)
     }
 
+    /** 滑块变化后刷新预览显示。 */
+    private fun refreshPreview() {
+        preview.setDisplayStyle(
+            prefs.getFloat("font_course", dp(12).toFloat()),
+            prefs.getFloat("font_loc", dp(10).toFloat()),
+            prefs.getFloat("font_header", dp(15).toFloat()),
+            prefs.getFloat("header_h", dp(48).toFloat()),
+            prefs.getFloat("cell_h", 0f),
+            prefs.getFloat("name_y", 0.33f),
+            prefs.getFloat("loc_y", 0.78f)
+        )
+        preview.invalidate()
+    }
+
     private fun sectionTitle(text: String): TextView = TextView(this).apply {
         this.text = text
         textSize = 15f
@@ -164,14 +193,13 @@ class SettingsActivity : Activity() {
             setColor(0xFFE0E0E0.toInt())
         }
     }.also { it.layoutParams = LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply { setMargins(0, dp(16), 0, dp(16)) } }
+        ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply { setMargins(0, dp(8), 0, dp(8)) } }
 
-    /** 一个滑块行：标签 + SeekBar，拖动即保存。 */
+    /** 一个滑块行：标签 + SeekBar，拖动即保存并刷新预览。initValue 为 range 内的显示值。 */
     private fun sliderRow(
         prefKey: String, title: String, range: IntRange,
-        init: Float, text: (Int) -> String, save: (Int) -> Unit
+        initValue: Float, text: (Int) -> String, save: (Int) -> Unit
     ): LinearLayout {
-        val pxToProgress: (Float) -> Int = { px -> if (px <= 0f) range.first else (px / density).roundToInt().coerceIn(range) }
         val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val label = TextView(this).apply {
             textSize = 13f
@@ -181,8 +209,7 @@ class SettingsActivity : Activity() {
         fun refresh(progress: Int) { label.text = "$title：${text(progress)}" }
         val bar = SeekBar(this).apply {
             max = range.last - range.first
-            progress = pxToProgress(init) - range.first
-            setPadding(0, 0, 0, 0)
+            progress = (initValue - range.first).roundToInt().coerceIn(0, max)
         }
         refresh(bar.progress + range.first)
         bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -206,6 +233,12 @@ class SettingsActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             setMargins(l, t, r, b)
         }
+
+    private fun todayDayOfWeek(): Int {
+        val cal = java.util.Calendar.getInstance()
+        val calDay = cal.get(java.util.Calendar.DAY_OF_WEEK) // 1=周日 … 7=周六
+        return ((calDay + 5) % 7) + 1
+    }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 }
