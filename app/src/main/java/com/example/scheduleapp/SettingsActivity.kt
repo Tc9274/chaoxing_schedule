@@ -186,6 +186,17 @@ class SettingsActivity : Activity() {
                 if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() },
             defaultVal = 36))
 
+        root.addView(sliderRow("time_w", "节次宽度", 40..120,
+            initValue = prefs.getFloat("time_w", dp(58).toFloat()) / density,
+            text = { n -> "${n} dp" },
+            save = { n -> prefs.edit().putFloat("time_w",
+                dp(n).toFloat()).apply(); refreshPreview() },
+            defaultVal = 58))
+        root.addView(switchRow("时间分两行显示", prefs.getBoolean("time_two_line", true)) { on ->
+            prefs.edit().putBoolean("time_two_line", on).apply()
+            refreshPreview()
+        })
+
         root.addView(sliderRow("name_y", "课程名上下位置", 0..1000,
             initValue = prefs.getFloat("name_y", 0.27f) * 1000,
             text = { n -> "${(n / 10)}%" },
@@ -249,10 +260,12 @@ class SettingsActivity : Activity() {
                     .putFloat("font_header", dp(11).toFloat())
                     .putFloat("header_h", dp(48).toFloat())
                     .putFloat("cell_h", dp(36).toFloat())
+                    .putFloat("time_w", dp(58).toFloat())
                     .putFloat("name_y", 0.27f)
                     .putFloat("loc_y", 0.60f)
                     .putBoolean("show_sat", true)
                     .putBoolean("show_sun", true)
+                    .putBoolean("time_two_line", true)
                     .putInt("anim_switch", 300)
                     .putInt("anim_back", 300)
                     .putInt("anim_cancel", 300)
@@ -279,6 +292,8 @@ class SettingsActivity : Activity() {
         preview.setShowDays(
             prefs.getBoolean("show_sat", true),
             prefs.getBoolean("show_sun", true))
+        preview.setTimeWidth(prefs.getFloat("time_w", dp(58).toFloat()))
+        preview.setTimeTwoLine(prefs.getBoolean("time_two_line", true))
         updatePreviewHeight()
         preview.invalidate()
     }
@@ -388,10 +403,12 @@ class SettingsActivity : Activity() {
         if (!prefs.contains("font_header")) e.putFloat("font_header", dp(11).toFloat())
         if (!prefs.contains("header_h")) e.putFloat("header_h", dp(48).toFloat())
         if (!prefs.contains("cell_h")) e.putFloat("cell_h", dp(36).toFloat())
+        if (!prefs.contains("time_w")) e.putFloat("time_w", dp(58).toFloat())
         if (!prefs.contains("name_y")) e.putFloat("name_y", 0.27f)
         if (!prefs.contains("loc_y")) e.putFloat("loc_y", 0.60f)
         if (!prefs.contains("show_sat")) e.putBoolean("show_sat", true)
         if (!prefs.contains("show_sun")) e.putBoolean("show_sun", true)
+        if (!prefs.contains("time_two_line")) e.putBoolean("time_two_line", true)
         e.apply()
     }
 

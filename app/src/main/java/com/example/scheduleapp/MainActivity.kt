@@ -25,6 +25,7 @@ import java.util.Calendar
 class MainActivity : Activity() {
 
     private lateinit var titleView: TextView
+    private lateinit var weekLabel: TextView
     private lateinit var statusView: TextView
     private lateinit var scheduleView: ScheduleView
     private val handler = Handler(Looper.getMainLooper())
@@ -33,7 +34,7 @@ class MainActivity : Activity() {
     private var viewWeek = 0
     private var lastShownWeek = 0
     private var maxWeek = 0
-    private var lastUpdateMs = 0L
+    private val weekUpdateMs = HashMap<Int, Long>()   // 各周的刷新时间（状态行按当前查看周显示）
     private var currentData: ScheduleData? = null
     private var currentChangeKeys: Set<String> = emptySet()
 
@@ -62,6 +63,26 @@ class MainActivity : Activity() {
         }
         val refreshBtn = pillButton("刷新") { refresh() }
         row1.addView(titleView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        weekLabel = TextView(this).apply {
+            text = ""
+            textSize = 13f
+            setTextColor(0xFF2C7BB6.toInt())
+            typeface = Typeface.DEFAULT_BOLD
+            // 点击蓝色周数回到真实本周
+            setOnClickListener {
+                val rw = currentData?.currentWeek ?: viewWeek
+                if (rw != viewWeek) {
+                    viewWeek = rw
+                    prefs.edit().putInt("last_view_week", rw).apply()
+                    updateStatus()
+                    if (!showCachedWeek(rw)) fetchWeek(rw)
+                }
+            }
+        }
+        val wlp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        wlp.setMargins(0, 0, dp(8), 0)
+        row1.addView(weekLabel, wlp)
         val slp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         slp.setMargins(0, 0, dp(8), 0)
@@ -179,6 +200,8 @@ class MainActivity : Activity() {
                     val raw = ScheduleApi.fetchRaw(uuid, w)
                     prefs.edit().putString("weekCache_$w", raw).apply()
                     ok++
+                    weekUpdateMs[w] = System.currentTimeMillis()   // 每成功获取一周都记录刷新时间
+                    prefs.edit().putLong("weekUpdate_$w", weekUpdateMs[w]!!).apply()
                     if (realWeek == 0) realWeek = ScheduleApi.parse(raw).currentWeek
                 } catch (e: Exception) {
                     // 单周失败跳过
@@ -189,6 +212,8 @@ class MainActivity : Activity() {
             val week = realWeek.takeIf { it > 0 } ?: getCachedViewWeek()
             prefs.edit().putInt("last_view_week", week).apply()
             handler.post {
+                weekUpdateMs[week] = System.currentTimeMillis()   // 首次获取完成也算一次更新
+                prefs.edit().putLong("weekUpdate_$week", weekUpdateMs[week]!!).apply()
                 showCachedWeek(week)
                 startTicker()
                 Toast.makeText(this, "首次课表获取完成", Toast.LENGTH_SHORT).show()
@@ -213,7 +238,8 @@ class MainActivity : Activity() {
                     .putString("base_json", raw)
                     .putInt("last_view_week", week)
                     .apply()
-                lastUpdateMs = System.currentTimeMillis()
+                weekUpdateMs[week] = System.currentTimeMillis()
+                prefs.edit().putLong("weekUpdate_$week", weekUpdateMs[week]!!).apply()
                 viewWeek = week
                 lastShownWeek = week
                 handler.post {
@@ -273,6 +299,7 @@ class MainActivity : Activity() {
         viewWeek = week
         lastShownWeek = week
         maxWeek = data.maxWeek
+        weekLabel.text = "第${data.currentWeek}周"   // 蓝色周数=真实本周，恒定不随切周变
         updateStatus()
     }
 
@@ -288,11 +315,12 @@ class MainActivity : Activity() {
         return max
     }
 
-    /** 顶部信息行：学期 + 当前查看周 + 距离上次更新。 */
+    /** 顶部信息行：学期 + 当前查看周 + 该周距上次刷新时间。 */
     private fun updateStatus() {
         val week = "第${viewWeek}周/共${maxWeek}周"
-        statusView.text = if (lastUpdateMs > 0)
-            "$infoBase · $week · 更新于 ${relTime(lastUpdateMs)}"
+        val ms = prefs.getLong("weekUpdate_$viewWeek", 0)
+        statusView.text = if (ms > 0)
+            "$infoBase · $week · 更新于 ${relTime(ms)}"
         else "$infoBase · $week"
     }
 
@@ -364,11 +392,14 @@ class MainActivity : Activity() {
         scheduleView.setShowDays(
             prefs.getBoolean("show_sat", true),
             prefs.getBoolean("show_sun", true))
+        scheduleView.setTimeWidth(prefs.getFloat("time_w", dp(58).toFloat()))
+        scheduleView.setTimeTwoLine(prefs.getBoolean("time_two_line", true))
     }
 
     override fun onResume() {
         super.onResume()
         if (currentData != null) applyDisplayStyle()
+        updateStatus()   // 刷新状态行（含"更新于"时间）
     }
 
     /** 读取某周的缓存数据（供相邻屏滑动显示）。 */

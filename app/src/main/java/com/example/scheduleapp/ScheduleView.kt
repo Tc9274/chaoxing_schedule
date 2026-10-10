@@ -37,7 +37,7 @@ class ScheduleView @JvmOverloads constructor(
     var onLessonClick: ((Lesson) -> Unit)? = null
 
     private var headerH = dp(48f)
-    private val timeW = dp(58f)
+    private var timeW = dp(58f)   // 节次列宽度（可调）
     private val labelPad = dp(8f)
 
     // 显示设置（用户可调，默认自适应）
@@ -50,6 +50,7 @@ class ScheduleView @JvmOverloads constructor(
     private var maxSectionCount = 0
     private var showSat = true      // 是否显示周六
     private var showSun = true      // 是否显示周日
+    private var timeTwoLine = true  // 节次时间两行（起/止分行）或一行（起-止）
 
     // 按周切换：当前查看周
     private var currentWeek = 0
@@ -103,6 +104,8 @@ class ScheduleView @JvmOverloads constructor(
     private val weekendLinePaint = Paint().apply {
         color = 0xFF4CAF50.toInt(); style = Paint.Style.STROKE; strokeWidth = dp(3f)
     }
+    private val weekColPaint = Paint().apply { color = 0xFFDFF5E1.toInt() }   // 本周节次列浅绿
+    private val headerWeekendFill = Paint().apply { color = 0xFFC6EAC9.toInt() } // 本周表头节次格浅绿
 
     init { isClickable = true }
 
@@ -159,11 +162,24 @@ class ScheduleView @JvmOverloads constructor(
         invalidate()
     }
 
+    /** 设置节次列（时间轴）宽度（像素）。 */
+    fun setTimeWidth(px: Float) {
+        timeW = px
+        requestLayout()
+        invalidate()
+    }
+
     /** 设置动画时长（毫秒）：切周 / 弹回 / 取消回弹。 */
     fun setAnimDurations(switchMs: Int, backMs: Int, cancelMs: Int) {
         animSwitchMs = switchMs.toLong().coerceIn(50, 1000)
         animBackMs = backMs.toLong().coerceIn(50, 1000)
         animCancelMs = cancelMs.toLong().coerceIn(50, 1000)
+    }
+
+    /** 设置节次时间显示方式：true=起/止分两行（8:40 / 10:05）；false=一行（8:40-10:05）。 */
+    fun setTimeTwoLine(twoLine: Boolean) {
+        timeTwoLine = twoLine
+        invalidate()
     }
 
     /** 设置是否显示周六、周日两列。被关闭的列不画课程，若该列当周有课则在列两侧画绿线提示。 */
@@ -242,8 +258,9 @@ class ScheduleView @JvmOverloads constructor(
         }
         val sign = if (isNext) -1f else 1f     // 当前屏滑向 -width/+width，相邻屏从对面进入
         animateOffset(offsetX, sign * width, animSwitchMs) {
-            offsetX = 0f                        // 相邻屏已就位，直接归位
-            onWeekChanged?.invoke(target)       // 切换数据（相邻屏数据随后更新）
+            // 先切数据（此时新周仍停在新周相邻屏的位置，平滑无闪），再归位
+            onWeekChanged?.invoke(target)
+            offsetX = 0f
             invalidate()
         }
     }
@@ -282,17 +299,17 @@ class ScheduleView @JvmOverloads constructor(
             return
         }
         // 主屏：当前周
-        drawSchedule(canvas, d, offsetX, true)
+        drawSchedule(canvas, d, offsetX, currentWeek, true)
         // 相邻屏：滑动时从对面同步进入，避免切换空白
         if (offsetX < 0) {
-            nextData?.let { drawSchedule(canvas, it, offsetX + width, false) }
+            nextData?.let { drawSchedule(canvas, it, offsetX + width, currentWeek + 1, false) }
         } else if (offsetX > 0) {
-            prevData?.let { drawSchedule(canvas, it, offsetX - width, false) }
+            prevData?.let { drawSchedule(canvas, it, offsetX - width, currentWeek - 1, false) }
         }
     }
 
-    /** 绘制一个周的完整课表（表头、网格、课程），整体按 xOff 平移。 */
-    private fun drawSchedule(canvas: Canvas, d: ScheduleData, xOff: Float, collectRects: Boolean) {
+    /** 绘制一个周的完整课表（表头、网格、课程），整体按 xOff 平移。week 为该屏显示的周号。 */
+    private fun drawSchedule(canvas: Canvas, d: ScheduleData, xOff: Float, week: Int, collectRects: Boolean) {
         canvas.save()
         canvas.translate(xOff, 0f)
 
@@ -311,18 +328,23 @@ class ScheduleView @JvmOverloads constructor(
         if (showSun) dayIndex[7] = di++
         val dayW = bodyW / days.size
 
-        // 表头（黄色仅标记"本周的当天"）
-        drawHeader(canvas, dayW, days, currentWeek == d.currentWeek)
+        // 表头（该屏是本周时整行浅绿；当天保持黄色）
+        drawHeader(canvas, dayW, days, week == d.currentWeek)
 
         // 时间轴 + 网格
         for (s in 0 until sectionCount) {
             val top = headerH + s * cellH
             // 横向网格线
             canvas.drawLine(timeW, top, width.toFloat(), top, gridPaint)
-            // 时间文字（节次 + 起时）
+            // 时间文字（节次 + 起止时间；两行=起/止分行无"-"，一行=起-止）
             val time = d.sectionTimes.getOrNull(s)?.second ?: ""
             val start = time.substringBefore("-")
-            val label = if (start.isNotEmpty()) "${s + 1}节\n$start" else "${s + 1}节"
+            val end = time.substringAfter("-")
+            val label = when {
+                timeTwoLine && start.isNotEmpty() && end.isNotEmpty() -> "${s + 1}节\n$start\n$end"
+                time.isNotEmpty() -> "${s + 1}节\n$time"
+                else -> "${s + 1}节"
+            }
             timeTextPaint.textAlign = Paint.Align.CENTER
             drawMultiline(canvas, label, timeW / 2f, top + cellH / 2f, timeTextPaint, dp(10f))
         }
@@ -383,12 +405,17 @@ class ScheduleView @JvmOverloads constructor(
             val right = left + dayW
             // 黄色高亮仅标记"本周(当前查看周=真实本周)的当天"，查看其他周不标
             val isToday = (i + 1) == todayDay && isThisWeek
-            canvas.drawRect(left, 0f, right, headerH, if (isToday) headerTodayFill else headerNormalFill)
+            val bg = when {
+                isToday -> headerTodayFill          // 当天保持黄色
+                isThisWeek -> headerWeekendFill     // 查看本周：表头行浅绿
+                else -> headerNormalFill
+            }
+            canvas.drawRect(left, 0f, right, headerH, bg)
             // 今日标记
             if (isToday) headerPaint.color = Color.WHITE
             drawTextCenter(canvas, days[i], (left + right) / 2f, headerH / 2f, headerPaint)
         }
-        canvas.drawRect(0f, 0f, timeW, headerH, headerNormalFill)
+        canvas.drawRect(0f, 0f, timeW, headerH, if (isThisWeek) headerWeekendFill else headerNormalFill)
         drawTextCenter(canvas, "节次", timeW / 2f, headerH / 2f, headerPaint)
         headerPaint.color = Color.WHITE
         canvas.drawLine(timeW, headerH, width.toFloat(), headerH, gridPaint)
