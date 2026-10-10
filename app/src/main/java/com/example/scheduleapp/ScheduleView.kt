@@ -113,8 +113,63 @@ class ScheduleView @JvmOverloads constructor(
         0xFFDFD3C3.toInt(), // 淡褐
         0xFFCCEBF1.toInt(), // 浅青蓝
     )
-    private fun courseColor(course: String): Int =
-        courseColors[(course.hashCode() and 0x7fffffff) % courseColors.size]
+    /** 用户自定义课程颜色回调：输入课程名，返回自定义颜色或 null（null=用默认哈希色）。 */
+    var customColor: ((String) -> Int?)? = null
+
+    /** 默认课程配色池（浅色系、色相差明显）：按课程出现顺序分配，每课不同；池用完改用随机浅色不重复。 */
+    private val defaultPalette = intArrayOf(
+        0xFFEF9A9A.toInt(),  // 浅红
+        0xFFFFCC80.toInt(),  // 浅橙
+        0xFFD7CCC8.toInt(),  // 浅棕
+        0xFFA5D6A7.toInt(),  // 浅绿
+        0xFF80CBC4.toInt(),  // 浅青
+        0xFF90CAF9.toInt(),  // 浅蓝
+        0xFF9FA8DA.toInt(),  // 浅靛蓝
+        0xFFCE93D8.toInt(),  // 浅紫
+        0xFFF48FB1.toInt(),  // 浅粉
+        0xFFBCAAA4.toInt()   // 浅褐
+    )
+    private val assignedColors = HashMap<String, Int>()   // 课程名 -> 已分配默认色
+    private val usedColors = HashSet<Int>()               // 已占用色（含随机），用于不重复
+    private var poolCursor = 0
+
+    private fun randomDistinctColor(): Int {
+        val rnd = java.util.Random()
+        var c: Int
+        do {
+            val r = 160 + rnd.nextInt(96)
+            val g = 160 + rnd.nextInt(96)
+            val b = 160 + rnd.nextInt(96)
+            c = 0xFF000000.toInt() or (r shl 16) or (g shl 8) or b
+        } while (c in usedColors)
+        return c
+    }
+
+    /** "仅这一节"的颜色覆盖回调：输入 星期|节次|课程，返回该节颜色或 0（无覆盖）。 */
+    var oneColor: ((String) -> Int)? = null
+
+    private fun courseColor(lesson: Lesson): Int {
+        val key = "${lesson.dayOfWeek}|${lesson.beginSection}|${lesson.course}"
+        oneColor?.invoke(key)?.let { if (it != 0) return it }
+        customColor?.invoke(lesson.course)?.let { if (it != 0) return it }
+        assignedColors[lesson.course]?.let { return it }
+        val color = if (poolCursor < defaultPalette.size) defaultPalette[poolCursor++]
+                    else randomDistinctColor()
+        assignedColors[lesson.course] = color
+        usedColors.add(color)
+        return color
+    }
+
+    /** 返回当前所有已占用颜色（供随机选色时避开）。 */
+    fun colorsInUse(): Set<Int> = usedColors.toSet()
+
+    /** 为课程分配一个不与现有色重复的随机浅色（弹窗"随机"按钮）。 */
+    fun assignRandomColor(course: String): Int {
+        val color = randomDistinctColor()
+        assignedColors[course] = color
+        usedColors.add(color)
+        return color
+    }
 
     private val todayFill = Paint().apply { color = 0xFFFDEBD0.toInt() }
     private val headerTodayFill = Paint().apply { color = 0xFFF0B429.toInt() }
@@ -418,7 +473,7 @@ class ScheduleView @JvmOverloads constructor(
             val rect = RectF(left, top, right, bottom)
             if (collectRects) lessonRects.add(rect to lesson)
             canvas.drawRoundRect(rect, corner, corner,
-                Paint(courseFill).apply { color = courseColor(lesson.course) })
+                Paint(courseFill).apply { color = courseColor(lesson) })
             // 变更强调：边框变橙
             if (keyOf(lesson) in changeKeys) {
                 canvas.drawRoundRect(rect, corner, corner, changePaint)

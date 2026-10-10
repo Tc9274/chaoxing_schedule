@@ -17,6 +17,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
+import android.widget.HorizontalScrollView
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -109,6 +110,8 @@ class MainActivity : Activity() {
 
         scheduleView = ScheduleView(this)
         scheduleView.onLessonClick = { lesson -> showLessonDialog(lesson) }
+        scheduleView.customColor = { name -> prefs.getInt("courseColor_$name", 0) }
+        scheduleView.oneColor = { key -> prefs.getInt("oneColor_$key", 0) }
         scheduleView.onWeekChanged = { week ->
             if (week != viewWeek) {
                 viewWeek = week
@@ -514,6 +517,20 @@ class MainActivity : Activity() {
     }
 
     /** 点击课程块弹出非全屏悬浮窗。 */
+    // 弹窗可选课程颜色池（浅色系但色相差明显，互不接近）
+    private val colorPalette = intArrayOf(
+        0xFFEF9A9A.toInt(),  // 浅红
+        0xFFFFCC80.toInt(),  // 浅橙
+        0xFFD7CCC8.toInt(),  // 浅棕
+        0xFFA5D6A7.toInt(),  // 浅绿
+        0xFF80CBC4.toInt(),  // 浅青
+        0xFF90CAF9.toInt(),  // 浅蓝
+        0xFF9FA8DA.toInt(),  // 浅靛蓝
+        0xFFCE93D8.toInt(),  // 浅紫
+        0xFFF48FB1.toInt(),  // 浅粉
+        0xFFBCAAA4.toInt()   // 浅褐
+    )
+
     private fun showLessonDialog(lesson: Lesson) {
         val dlg = Dialog(this)
         val root = LinearLayout(this).apply {
@@ -549,6 +566,62 @@ class MainActivity : Activity() {
         rg.addView(rbOne)
         rbAll.isChecked = true
         root.addView(rg)
+        // 课程颜色选择（同一课程一个颜色，持久化）
+        root.addView(fieldLabel("课程颜色"))
+        val colorRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val baseColor = prefs.getInt("courseColor_${lesson.course}",
+            prefs.getInt("oneColor_${keyOf(lesson)}", 0))
+        var pendingColor: Int? = null   // 选色暂存，点"保存"才应用
+        val swatches = ArrayList<View>()
+        // "随机"（为该课随机分配一个不与其他课重复的浅色）
+        val resetSwatch = TextView(this).apply {
+            text = "随机"
+            textSize = 11f
+            setTextColor(0xFF666666.toInt())
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                setColor(0xFFEEEEEE.toInt())
+                cornerRadius = dp(6).toFloat()
+            }
+        }
+        fun refreshSwatches() {
+            swatches.forEach { s ->
+                val c = s.tag as Int
+                (s.background as GradientDrawable).setStroke(
+                    if (pendingColor == c || (pendingColor == null && baseColor == c)) dp(2) else 0,
+                    0xFF222222.toInt())
+            }
+            (resetSwatch.background as GradientDrawable).setStroke(
+                if (pendingColor == null && baseColor == 0) dp(2) else 0,
+                0xFF222222.toInt())
+        }
+        colorPalette.forEach { c ->
+            val swatch = View(this).apply {
+                tag = c
+                background = GradientDrawable().apply {
+                    setColor(c)
+                    cornerRadius = dp(6).toFloat()
+                }
+            }
+            val lp = LinearLayout.LayoutParams(dp(30), dp(30))
+                .apply { setMargins(0, 0, dp(8), 0) }
+            swatch.setOnClickListener { pendingColor = c; refreshSwatches() }
+            swatches.add(swatch)
+            colorRow.addView(swatch, lp)
+        }
+        resetSwatch.setOnClickListener {
+            pendingColor = scheduleView.assignRandomColor(lesson.course)
+            refreshSwatches()
+        }
+        colorRow.addView(resetSwatch,
+            LinearLayout.LayoutParams(dp(44), dp(30)))
+        val colorScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(colorRow, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        root.addView(colorScroll)
+        refreshSwatches()
         // 三个操作按钮放一行
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         fun addAction(t: String, color: Int, act: () -> Unit) {
@@ -559,6 +632,10 @@ class MainActivity : Activity() {
         addAction("保存", 0xFF3B6EB5.toInt()) {
             saveDisplayRule(lesson, nameInput.text.toString().trim(),
                 locInput.text.toString().trim(), rbAll.isChecked)
+            if (pendingColor != null) {
+                if (rbAll.isChecked) prefs.edit().putInt("courseColor_${lesson.course}", pendingColor!!).apply()
+                else prefs.edit().putInt("oneColor_${keyOf(lesson)}", pendingColor!!).apply()
+            }
             refreshDisplay()
             dlg.dismiss()
         }

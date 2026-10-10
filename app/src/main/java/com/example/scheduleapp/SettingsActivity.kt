@@ -152,18 +152,18 @@ class SettingsActivity : Activity() {
         }
 
         root.addView(sliderRow("font_course", "课程名字号", 0..15,
-            initValue = prefs.getFloat("font_course", dp(9).toFloat()) / density,
+            initValue = prefs.getFloat("font_course", dp(11).toFloat()) / density,
             text = { n -> if (n == 0) "自动" else "${n} dp" },
             save = { n -> prefs.edit().putFloat("font_course",
                 if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() },
-            defaultVal = 9))
+            defaultVal = 11))
 
         root.addView(sliderRow("font_loc", "位置字号", 0..15,
-            initValue = prefs.getFloat("font_loc", dp(8).toFloat()) / density,
+            initValue = prefs.getFloat("font_loc", dp(10).toFloat()) / density,
             text = { n -> if (n == 0) "自动" else "${n} dp" },
             save = { n -> prefs.edit().putFloat("font_loc",
                 if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() },
-            defaultVal = 8))
+            defaultVal = 10))
 
         root.addView(sliderRow("font_header", "表头字号", 0..15,
             initValue = prefs.getFloat("font_header", dp(11).toFloat()) / density,
@@ -173,25 +173,25 @@ class SettingsActivity : Activity() {
             defaultVal = 11))
 
         root.addView(sliderRow("header_h", "表头高度", 0..60,
-            initValue = prefs.getFloat("header_h", dp(48).toFloat()) / density,
+            initValue = prefs.getFloat("header_h", dp(39).toFloat()) / density,
             text = { n -> if (n == 0) "自动" else "${n} dp" },
             save = { n -> prefs.edit().putFloat("header_h",
                 if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() },
-            defaultVal = 48))
+            defaultVal = 39))
 
         root.addView(sliderRow("cell_h", "格子高度", 0..50,
             initValue = prefs.getFloat("cell_h", 0f) / density,
             text = { n -> if (n == 0) "自动适配" else "${n} dp（超高需上下滚动）" },
             save = { n -> prefs.edit().putFloat("cell_h",
                 if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() },
-            defaultVal = 36))
+            defaultVal = 48))
 
         root.addView(sliderRow("time_w", "节次宽度", 40..120,
-            initValue = prefs.getFloat("time_w", dp(58).toFloat()) / density,
+            initValue = prefs.getFloat("time_w", dp(50).toFloat()) / density,
             text = { n -> "${n} dp" },
             save = { n -> prefs.edit().putFloat("time_w",
                 dp(n).toFloat()).apply(); refreshPreview() },
-            defaultVal = 58))
+            defaultVal = 50))
         root.addView(sliderRow("name_y", "课程名上下位置", 0..1000,
             initValue = prefs.getFloat("name_y", 0.27f) * 1000,
             text = { n -> "${(n / 10)}%" },
@@ -255,13 +255,17 @@ class SettingsActivity : Activity() {
         root.addView(Button(this).apply {
             text = "恢复默认显示"
             setOnClickListener {
+                // 同时清空所有课程自定义颜色与"仅本节"颜色（回到各课程默认自动色）
+                prefs.all.keys.filter {
+                    it.startsWith("courseColor_") || it.startsWith("oneColor_")
+                }.forEach { prefs.edit().remove(it).apply() }
                 prefs.edit()
-                    .putFloat("font_course", dp(9).toFloat())
-                    .putFloat("font_loc", dp(8).toFloat())
+                    .putFloat("font_course", dp(11).toFloat())
+                    .putFloat("font_loc", dp(10).toFloat())
                     .putFloat("font_header", dp(11).toFloat())
-                    .putFloat("header_h", dp(48).toFloat())
-                    .putFloat("cell_h", dp(36).toFloat())
-                    .putFloat("time_w", dp(58).toFloat())
+                    .putFloat("header_h", dp(39).toFloat())
+                    .putFloat("cell_h", dp(48).toFloat())
+                    .putFloat("time_w", dp(50).toFloat())
                     .putFloat("name_y", 0.27f)
                     .putFloat("loc_y", 0.60f)
                     .putBoolean("show_sat", true)
@@ -283,10 +287,10 @@ class SettingsActivity : Activity() {
     /** 滑块变化后刷新预览显示。 */
     private fun refreshPreview() {
         preview.setDisplayStyle(
-            prefs.getFloat("font_course", dp(9).toFloat()),
-            prefs.getFloat("font_loc", dp(8).toFloat()),
+            prefs.getFloat("font_course", dp(11).toFloat()),
+            prefs.getFloat("font_loc", dp(10).toFloat()),
             prefs.getFloat("font_header", dp(11).toFloat()),
-            prefs.getFloat("header_h", dp(48).toFloat()),
+            prefs.getFloat("header_h", dp(39).toFloat()),
             prefs.getFloat("cell_h", 0f),
             prefs.getFloat("name_y", 0.27f),
             prefs.getFloat("loc_y", 0.60f)
@@ -447,15 +451,15 @@ class SettingsActivity : Activity() {
         }
     }
 
-    /** 首次进入设置时，把缺失的显示参数写入默认值（字号9/8/11、表高48、格高36、位置27%/60%）。 */
+    /** 首次进入设置时，把缺失的显示参数写入默认值（字号11/10/11、表高39、格高48、节次宽50、位置27%/60%）。 */
     private fun ensureDefaults() {
         val e = prefs.edit()
-        if (!prefs.contains("font_course")) e.putFloat("font_course", dp(9).toFloat())
-        if (!prefs.contains("font_loc")) e.putFloat("font_loc", dp(8).toFloat())
+        if (!prefs.contains("font_course")) e.putFloat("font_course", dp(11).toFloat())
+        if (!prefs.contains("font_loc")) e.putFloat("font_loc", dp(10).toFloat())
         if (!prefs.contains("font_header")) e.putFloat("font_header", dp(11).toFloat())
-        if (!prefs.contains("header_h")) e.putFloat("header_h", dp(48).toFloat())
-        if (!prefs.contains("cell_h")) e.putFloat("cell_h", dp(36).toFloat())
-        if (!prefs.contains("time_w")) e.putFloat("time_w", dp(58).toFloat())
+        if (!prefs.contains("header_h")) e.putFloat("header_h", dp(39).toFloat())
+        if (!prefs.contains("cell_h")) e.putFloat("cell_h", dp(48).toFloat())
+        if (!prefs.contains("time_w")) e.putFloat("time_w", dp(50).toFloat())
         if (!prefs.contains("name_y")) e.putFloat("name_y", 0.27f)
         if (!prefs.contains("loc_y")) e.putFloat("loc_y", 0.60f)
         if (!prefs.contains("show_sat")) e.putBoolean("show_sat", true)
