@@ -9,6 +9,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -29,12 +30,12 @@ class SettingsActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val scroll = ScrollView(this)
+        val scroll = SettingScrollView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(24), dp(20), dp(20))
         }
-        scroll.addView(root, android.widget.FrameLayout.LayoutParams(
+        scroll.addView(root, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         // 标题
@@ -94,15 +95,41 @@ class SettingsActivity : Activity() {
         root.addView(spacer())
         root.addView(sectionTitle("显示设置"))
         root.addView(TextView(this).apply {
-            text = "拖动滑块实时生效，上方预览可看到效果。"
+            text = "拖动滑块实时生效，下方预览可看到效果。"
             textSize = 13f
             setTextColor(Color.parseColor("#666666"))
             setPadding(0, 0, 0, dp(8))
         })
-        // 效果预览（内嵌课表，随滑块实时变化）
-        root.addView(preview, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(300)).apply { setMargins(0, 0, 0, dp(8)) })
-        val raw = prefs.getString("json", null)
+        // 效果预览卡片：高度=屏幕2/5、两边留缝隙、圆角边框，内部可上下滚动浏览全部课表
+        val previewCard = PreviewScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                resources.displayMetrics.heightPixels * 2 / 5).apply {
+                setMargins(dp(12), 0, dp(12), dp(8))
+            }
+            background = GradientDrawable().apply {
+                cornerRadius = dp(12).toFloat()
+                setColor(Color.parseColor("#FFFFFF"))
+            }
+            clipToOutline = true
+            isVerticalScrollBarEnabled = true
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+        }
+        previewCard.addView(preview, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(previewCard)
+        // 外层设置页滚动：按在预览卡片内时放行，交给预览自己滚动
+        scroll.previewTarget = previewCard
+        // 效果预览数据源：优先用当前查看周的缓存（weekCache_*），兼容旧 json key
+        val raw = run {
+            val w = prefs.getInt("last_view_week", 0).coerceAtLeast(1)
+            var r = prefs.getString("weekCache_$w", null)
+            if (r == null) {
+                prefs.all.keys.firstOrNull { it.startsWith("weekCache_") }
+                    ?.let { r = prefs.getString(it, null) }
+            }
+            r ?: prefs.getString("json", null)
+        }
         if (raw != null) {
             try {
                 previewData = ScheduleApi.parse(raw)
@@ -170,20 +197,16 @@ class SettingsActivity : Activity() {
         root.addView(sliderRow("anim_switch", "切周动画", 300..1000,
             initValue = prefs.getInt("anim_switch", 300).toFloat(),
             text = { n -> "${n} ms" },
-            save = { n -> prefs.edit().putInt("anim_switch", n).apply() },
-            onStop = { n -> animPreview.play("switch", n.toLong()) }))
+            save = { n -> prefs.edit().putInt("anim_switch", n).apply() }))
         root.addView(sliderRow("anim_back", "弹回动画", 300..1000,
             initValue = prefs.getInt("anim_back", 300).toFloat(),
             text = { n -> "${n} ms" },
-            save = { n -> prefs.edit().putInt("anim_back", n).apply() },
-            onStop = { n -> animPreview.play("back", n.toLong()) }))
+            save = { n -> prefs.edit().putInt("anim_back", n).apply() }))
         root.addView(sliderRow("anim_cancel", "取消回弹", 300..1000,
             initValue = prefs.getInt("anim_cancel", 300).toFloat(),
             text = { n -> "${n} ms" },
-            save = { n -> prefs.edit().putInt("anim_cancel", n).apply() },
-            onStop = { n -> animPreview.play("cancel", n.toLong()) }))
-        // 进入设置时先按默认值播一次切周动画，让用户看到预览效果
-        animPreview.post { animPreview.play("switch", prefs.getInt("anim_switch", 300).toLong()) }
+            save = { n -> prefs.edit().putInt("anim_cancel", n).apply() }))
+        // 预览区支持手指左右滑动切换周；不自动播放。
 
         root.addView(spacer())
         root.addView(Button(this).apply {
@@ -213,7 +236,28 @@ class SettingsActivity : Activity() {
             prefs.getFloat("name_y", 0.33f),
             prefs.getFloat("loc_y", 0.78f)
         )
+        updatePreviewHeight()
         preview.invalidate()
+    }
+
+    /** 预览高度：始终超过预览卡片（屏幕2/5），保证内部可上下滚动浏览全部课表。 */
+    private fun updatePreviewHeight() {
+        val pd = previewData ?: return
+        val sections = pd.sectionTimes.size.coerceAtLeast(1)
+        val cellH = prefs.getFloat("cell_h", 0f)
+        val header = prefs.getFloat("header_h", dp(48).toFloat())
+        val cardH = resources.displayMetrics.heightPixels * 2 / 5
+        val contentH = if (cellH > 0f) {
+            (header + sections * cellH).toInt()
+        } else {
+            // 自动：每节约 56dp 铺开全部课表
+            (header + sections * dp(56)).toInt()
+        }
+        // 强制超出卡片高度，确保可滚动浏览全部
+        val h = maxOf(contentH, cardH + dp(20))
+        preview.layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, h)
+        preview.requestLayout()
     }
 
     private fun sectionTitle(text: String): TextView = TextView(this).apply {
@@ -275,6 +319,50 @@ class SettingsActivity : Activity() {
             setMargins(l, t, r, b)
         }
 
+    /** 平缓的惯性滚动：速度封顶后减小，长滑平滑减速不卡顿；快速短滑也不会一下冲到顶/底。 */
+    /** 外层设置页滚动：手指按在预览卡片区域内时不拦截，交给预览内部滚动；预览外正常滚动页面。 */
+    private inner class SettingScrollView(ctx: android.content.Context) : ScrollView(ctx) {
+        var previewTarget: View? = null
+        private var touchingPreview = false
+
+        override fun onInterceptTouchEvent(ev: android.view.MotionEvent): Boolean {
+            val t = previewTarget
+            if (t != null && t.visibility == View.VISIBLE) {
+                when (ev.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> {
+                        touchingPreview = pointInView(ev, t)
+                        if (touchingPreview) return false
+                    }
+                    android.view.MotionEvent.ACTION_MOVE ->
+                        if (touchingPreview) return false
+                    else -> touchingPreview = false
+                }
+            }
+            return super.onInterceptTouchEvent(ev)
+        }
+
+        private fun pointInView(ev: android.view.MotionEvent, v: View): Boolean {
+            val loc = IntArray(2)
+            v.getLocationOnScreen(loc)
+            return ev.rawY >= loc[1] && ev.rawY <= loc[1] + v.height
+        }
+    }
+
+    /** 嵌套在外层设置页 ScrollView 内的可滚动预览容器：滚动时禁止外层拦截，保证预览内上下滑动滚动课表。 */
+    private inner class PreviewScrollView(ctx: android.content.Context) : ScrollView(ctx) {
+        override fun onTouchEvent(ev: android.view.MotionEvent): Boolean {
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN,
+                android.view.MotionEvent.ACTION_MOVE ->
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                android.view.MotionEvent.ACTION_UP,
+                android.view.MotionEvent.ACTION_CANCEL ->
+                    parent?.requestDisallowInterceptTouchEvent(false)
+            }
+            return super.onTouchEvent(ev)
+        }
+    }
+
     private fun todayDayOfWeek(): Int {
         val cal = java.util.Calendar.getInstance()
         val calDay = cal.get(java.util.Calendar.DAY_OF_WEEK) // 1=周日 … 7=周六
@@ -282,33 +370,85 @@ class SettingsActivity : Activity() {
     }
 
     /**
-     * 动画速度预览：用与真实课表一致的"相邻周卡片平移"动画来演示。
+     * 动画速度预览：在预览区左右滑动切换周（跟手），松手按位移/速度切周或弹回，动画时长取自对应滑块。
      * play(mode, ms)：
-     *   switch = 切周动画：当前周卡左滑出、下一周卡从右侧滑入到位
-     *   back   = 弹回动画：当前周卡拖出一点后弹回原位
-     *   cancel = 取消回弹：当前周卡拖出一半后弹回原位
+     *   switch = 左滑切下一周：当前周卡左滑出、下一周卡从右侧滑入到位
+     *   switchBack = 右滑切回上一周
+     *   back   = 弹回原位
+     *   cancel = 取消回弹（拖出较多回弹）
      */
     private inner class AnimPreviewView(ctx: android.content.Context) : android.view.View(ctx) {
         private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
         private var offsetX = 0f
         private var animator: android.animation.ValueAnimator? = null
+        private var downX = 0f
+        private var isDragging = false
+        private val labels = listOf("第 5 周", "第 6 周", "第 7 周", "第 8 周",
+            "第 9 周", "第 10 周", "第 11 周", "第 12 周")
+        private var currentIndex = 0   // 当前主卡下标
+        private var velocityTracker: android.view.VelocityTracker? = null
+        private val touchSlop = android.view.ViewConfiguration.get(ctx).scaledTouchSlop
 
         init { setBackgroundColor(android.graphics.Color.parseColor("#EEF0F2")) }
+
+        /** 与主课表一致的滑动手感：快速甩动（速度判定）或拖过半（位移判定）即切周。 */
+        override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+            when (event.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downX = event.x; isDragging = true; animator?.cancel()
+                    velocityTracker = android.view.VelocityTracker.obtain()
+                    velocityTracker?.addMovement(event)
+                    return true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> if (isDragging) {
+                    offsetX = (event.x - downX)
+                    velocityTracker?.addMovement(event)
+                    invalidate()
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    isDragging = false
+                    velocityTracker?.apply {
+                        computeCurrentVelocity(1000)
+                    }
+                    val vx = velocityTracker?.xVelocity ?: 0f
+                    val dx = event.x - downX
+                    val fling = kotlin.math.abs(vx) > 1200f && kotlin.math.abs(dx) > touchSlop * 2f
+                    val dirIsNext = if (fling) vx < 0f else dx < 0f
+                    if (fling || kotlin.math.abs(dx) > width * 0.5f) {
+                        play(if (dirIsNext) "switch" else "switchBack",
+                            prefs.getInt("anim_switch", 300).toLong())
+                    } else {
+                        play("back", prefs.getInt("anim_back", 300).toLong())
+                    }
+                    velocityTracker?.recycle(); velocityTracker = null
+                }
+                android.view.MotionEvent.ACTION_CANCEL -> {
+                    isDragging = false
+                    velocityTracker?.recycle(); velocityTracker = null
+                    play("back", prefs.getInt("anim_back", 300).toLong())
+                }
+            }
+            return true
+        }
 
         fun play(mode: String, ms: Long) {
             animator?.cancel()
             val w = width.toFloat()
             val target = when (mode) {
-                "switch" -> -w * 1.05f          // 当前周滑出，下一周进入
-                "back"   -> -w * 0.5f           // 拖出一点弹回
-                else     -> -w * 0.8f           // cancel：拖出较多回弹
+                "switch"     -> -w * 1.05f   // 左滑：下一周进入
+                "switchBack" -> w * 1.05f    // 右滑：切回上一周
+                "cancel"     -> -w * 0.8f    // 取消：拖出较多回弹
+                else         -> 0f           // back：弹回原位
             }
             animator = android.animation.ValueAnimator.ofFloat(offsetX, target).apply {
                 duration = ms.coerceIn(50, 1000)
                 addUpdateListener { offsetX = it.animatedValue as Float; invalidate() }
                 addListener(object : android.animation.AnimatorListenerAdapter() {
                     override fun onAnimationEnd(a: android.animation.Animator) {
-                        offsetX = 0f   // 演示结束归位（switch 时已"切到下一周"，直接复原再供下次演示）
+                        // 切周成功才改主卡；弹回不改
+                        if (mode == "switch" && currentIndex < labels.size - 1) currentIndex++
+                        else if (mode == "switchBack" && currentIndex > 0) currentIndex--
+                        offsetX = 0f
                         invalidate()
                     }
                 })
@@ -322,10 +462,12 @@ class SettingsActivity : Activity() {
             val cardW = w * 0.78f; val cardH = h * 0.56f
             val top = h * 0.2f
             val left = w * 0.11f
-            // 当前周卡（第 5 周）——随 offsetX 左移
-            drawCard(canvas, left + offsetX, top, cardW, cardH, "第 5 周")
-            // 下一周卡（第 6 周）——位于当前周右侧，同步被带入
-            drawCard(canvas, left + cardW + w * 0.03f + offsetX, top, cardW, cardH, "第 6 周")
+            // 主卡（当前周）——随 offsetX 平移
+            drawCard(canvas, left + offsetX, top, cardW, cardH, labels[currentIndex])
+            // 右邻周卡（下一周）——从右侧跟随进入
+            labels.getOrNull(currentIndex + 1)?.let { next ->
+                drawCard(canvas, left + cardW + w * 0.03f + offsetX, top, cardW, cardH, next)
+            }
         }
 
         private fun drawCard(canvas: android.graphics.Canvas, x: Float, y: Float,
