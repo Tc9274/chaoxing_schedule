@@ -48,6 +48,8 @@ class ScheduleView @JvmOverloads constructor(
     private var nameY = 0.33f           // 课程名在块内垂直位置比例
     private var locY = 0.78f            // 位置在块内垂直位置比例
     private var maxSectionCount = 0
+    private var showSat = true      // 是否显示周六
+    private var showSun = true      // 是否显示周日
 
     // 按周切换：当前查看周
     private var currentWeek = 0
@@ -98,6 +100,9 @@ class ScheduleView @JvmOverloads constructor(
         color = 0xFFFF9800.toInt(); style = Paint.Style.STROKE; strokeWidth = dp(2.5f)
     }
     private val corner = dp(6f)
+    private val weekendLinePaint = Paint().apply {
+        color = 0xFF4CAF50.toInt(); style = Paint.Style.STROKE; strokeWidth = dp(3f)
+    }
 
     init { isClickable = true }
 
@@ -159,6 +164,13 @@ class ScheduleView @JvmOverloads constructor(
         animSwitchMs = switchMs.toLong().coerceIn(50, 1000)
         animBackMs = backMs.toLong().coerceIn(50, 1000)
         animCancelMs = cancelMs.toLong().coerceIn(50, 1000)
+    }
+
+    /** 设置是否显示周六、周日两列。被关闭的列不画课程，若该列当周有课则在列两侧画绿线提示。 */
+    fun setShowDays(sat: Boolean, sun: Boolean) {
+        showSat = sat
+        showSun = sun
+        invalidate()
     }
 
     /** 课程标识：星期|开始节次|课名。 */
@@ -287,10 +299,20 @@ class ScheduleView @JvmOverloads constructor(
         val sectionCount = d.sectionTimes.size.coerceAtLeast(1)
         val cellH = if (cellHOverride > 0) cellHOverride else (height - headerH) / sectionCount.toFloat()
         val bodyW = width - timeW
-        val dayW = bodyW / 7f
 
-        // 表头
-        drawHeader(canvas, dayW)
+        // 显示的天列：周一~周五恒显；周六、周日按开关决定（关闭则连表头一起消失，布局压缩）
+        val days = mutableListOf("周一", "周二", "周三", "周四", "周五")
+        if (showSat) days.add("周六")
+        if (showSun) days.add("周日")
+        val dayIndex = HashMap<Int, Int>()
+        var di = 0
+        for (day in 1..5) dayIndex[day] = di++
+        if (showSat) dayIndex[6] = di++
+        if (showSun) dayIndex[7] = di++
+        val dayW = bodyW / days.size
+
+        // 表头（黄色仅标记"本周的当天"）
+        drawHeader(canvas, dayW, days, currentWeek == d.currentWeek)
 
         // 时间轴 + 网格
         for (s in 0 until sectionCount) {
@@ -308,11 +330,20 @@ class ScheduleView @JvmOverloads constructor(
         canvas.drawLine(timeW, height.toFloat(), width.toFloat(), height.toFloat(), gridPaint)
         canvas.drawLine(timeW, headerH, timeW, height.toFloat(), gridPaint)
 
+        // 被隐藏的周末列：若当周该列有课，在相应边界画绿线提示
+        if (!showSat && d.lessons.any { it.dayOfWeek == 6 }) {
+            val x = timeW + 5 * dayW   // 周五右
+            canvas.drawLine(x, headerH, x, height.toFloat(), weekendLinePaint)
+        }
+        if (!showSun && d.lessons.any { it.dayOfWeek == 7 }) {
+            val x = timeW + days.size * dayW   // 显示区最右（周日原在最末列）
+            canvas.drawLine(x, headerH, x, height.toFloat(), weekendLinePaint)
+        }
+
         // 课程块（仅主屏收集点击区域）
         if (collectRects) lessonRects.clear()
         for (lesson in d.lessons) {
-            if (lesson.dayOfWeek < 1 || lesson.dayOfWeek > 7) continue
-            val dayCol = lesson.dayOfWeek - 1
+            val dayCol = dayIndex[lesson.dayOfWeek] ?: continue   // 隐藏的天不在布局中
             val top = headerH + (lesson.beginSection - 1) * cellH
             val bottom = top + lesson.length * cellH - dp(3f)
             val left = timeW + dayCol * dayW + dp(2f)
@@ -346,16 +377,16 @@ class ScheduleView @JvmOverloads constructor(
         canvas.restore()
     }
 
-    private fun drawHeader(canvas: Canvas, dayW: Float) {
-        val weekdays = arrayOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
-        for (i in weekdays.indices) {
+    private fun drawHeader(canvas: Canvas, dayW: Float, days: List<String>, isThisWeek: Boolean) {
+        for (i in days.indices) {
             val left = timeW + i * dayW
             val right = left + dayW
-            val isToday = (i + 1) == todayDay
+            // 黄色高亮仅标记"本周(当前查看周=真实本周)的当天"，查看其他周不标
+            val isToday = (i + 1) == todayDay && isThisWeek
             canvas.drawRect(left, 0f, right, headerH, if (isToday) headerTodayFill else headerNormalFill)
             // 今日标记
             if (isToday) headerPaint.color = Color.WHITE
-            drawTextCenter(canvas, weekdays[i], (left + right) / 2f, headerH / 2f, headerPaint)
+            drawTextCenter(canvas, days[i], (left + right) / 2f, headerH / 2f, headerPaint)
         }
         canvas.drawRect(0f, 0f, timeW, headerH, headerNormalFill)
         drawTextCenter(canvas, "节次", timeW / 2f, headerH / 2f, headerPaint)

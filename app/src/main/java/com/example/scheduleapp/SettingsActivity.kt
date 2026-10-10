@@ -13,6 +13,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.math.roundToInt
@@ -29,6 +30,7 @@ class SettingsActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ensureDefaults()
 
         val scroll = SettingScrollView(this)
         val root = LinearLayout(this).apply {
@@ -56,6 +58,10 @@ class SettingsActivity : Activity() {
             setLineSpacing(0f, 1.3f)
             setPadding(0, 0, 0, dp(10))
         })
+        val inputRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         val input = EditText(this).apply {
             hint = "粘贴超星课表链接或 UUID"
             textSize = 14f
@@ -66,8 +72,21 @@ class SettingsActivity : Activity() {
             minLines = 1
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
-        input.setText(prefs.getString("curriculum_uuid", ScheduleApi.DEFAULT_UUID) ?: ScheduleApi.DEFAULT_UUID)
-        root.addView(input, lpWithMargin(0, 0, 0, dp(6)))
+        input.setText(prefs.getString("curriculum_uuid", "") ?: "")
+        val clearBtn = TextView(this).apply {
+            text = "×"
+            textSize = 22f
+            setTextColor(Color.parseColor("#888888"))
+            gravity = Gravity.CENTER
+            setOnClickListener {
+                input.setText("")
+                Toast.makeText(this@SettingsActivity, "已清空，点击下方保存链接生效", Toast.LENGTH_SHORT).show()
+            }
+        }
+        inputRow.addView(input, LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        inputRow.addView(clearBtn, LinearLayout.LayoutParams(dp(46), dp(46)))
+        root.addView(inputRow, lpWithMargin(0, 0, 0, dp(6)))
         root.addView(Button(this).apply {
             text = "保存链接"
             setOnClickListener {
@@ -82,14 +101,6 @@ class SettingsActivity : Activity() {
                 finish()
             }
         }, lpWithMargin(0, 0, 0, dp(8)))
-        root.addView(Button(this).apply {
-            text = "恢复默认课表"
-            setOnClickListener {
-                prefs.edit().putString("curriculum_uuid", ScheduleApi.DEFAULT_UUID).apply()
-                input.setText(ScheduleApi.DEFAULT_UUID)
-                Toast.makeText(this@SettingsActivity, "已恢复默认课表", Toast.LENGTH_SHORT).show()
-            }
-        })
 
         // ===== 显示设置 =====
         root.addView(spacer())
@@ -141,44 +152,61 @@ class SettingsActivity : Activity() {
         }
 
         root.addView(sliderRow("font_course", "课程名字号", 0..15,
-            initValue = prefs.getFloat("font_course", dp(12).toFloat()) / density,
+            initValue = prefs.getFloat("font_course", dp(9).toFloat()) / density,
             text = { n -> if (n == 0) "自动" else "${n} dp" },
             save = { n -> prefs.edit().putFloat("font_course",
-                if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() }))
+                if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() },
+            defaultVal = 9))
 
         root.addView(sliderRow("font_loc", "位置字号", 0..15,
-            initValue = prefs.getFloat("font_loc", dp(10).toFloat()) / density,
+            initValue = prefs.getFloat("font_loc", dp(8).toFloat()) / density,
             text = { n -> if (n == 0) "自动" else "${n} dp" },
             save = { n -> prefs.edit().putFloat("font_loc",
-                if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() }))
+                if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() },
+            defaultVal = 8))
 
         root.addView(sliderRow("font_header", "表头字号", 0..15,
-            initValue = prefs.getFloat("font_header", dp(15).toFloat()) / density,
+            initValue = prefs.getFloat("font_header", dp(11).toFloat()) / density,
             text = { n -> if (n == 0) "自动" else "${n} dp" },
             save = { n -> prefs.edit().putFloat("font_header",
-                if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() }))
+                if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() },
+            defaultVal = 11))
 
         root.addView(sliderRow("header_h", "表头高度", 0..60,
             initValue = prefs.getFloat("header_h", dp(48).toFloat()) / density,
             text = { n -> if (n == 0) "自动" else "${n} dp" },
             save = { n -> prefs.edit().putFloat("header_h",
-                if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() }))
+                if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() },
+            defaultVal = 48))
 
         root.addView(sliderRow("cell_h", "格子高度", 0..50,
             initValue = prefs.getFloat("cell_h", 0f) / density,
             text = { n -> if (n == 0) "自动适配" else "${n} dp（超高需上下滚动）" },
             save = { n -> prefs.edit().putFloat("cell_h",
-                if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() }))
+                if (n == 0) 0f else dp(n).toFloat()).apply(); refreshPreview() },
+            defaultVal = 36))
 
         root.addView(sliderRow("name_y", "课程名上下位置", 0..1000,
-            initValue = prefs.getFloat("name_y", 0.33f) * 1000,
+            initValue = prefs.getFloat("name_y", 0.27f) * 1000,
             text = { n -> "${(n / 10)}%" },
-            save = { n -> prefs.edit().putFloat("name_y", n / 1000f).apply(); refreshPreview() }))
+            save = { n -> prefs.edit().putFloat("name_y", n / 1000f).apply(); refreshPreview() },
+            defaultVal = 270))
 
         root.addView(sliderRow("loc_y", "位置上下位置", 0..1000,
-            initValue = prefs.getFloat("loc_y", 0.78f) * 1000,
+            initValue = prefs.getFloat("loc_y", 0.60f) * 1000,
             text = { n -> "${(n / 10)}%" },
-            save = { n -> prefs.edit().putFloat("loc_y", n / 1000f).apply(); refreshPreview() }))
+            save = { n -> prefs.edit().putFloat("loc_y", n / 1000f).apply(); refreshPreview() },
+            defaultVal = 600))
+
+        // 是否显示周六、周日（关闭后该周周末有课时周五右侧画绿线提示）
+        root.addView(switchRow("显示周六", prefs.getBoolean("show_sat", true)) { on ->
+            prefs.edit().putBoolean("show_sat", on).apply()
+            refreshPreview()
+        })
+        root.addView(switchRow("显示周日", prefs.getBoolean("show_sun", true)) { on ->
+            prefs.edit().putBoolean("show_sun", on).apply()
+            refreshPreview()
+        })
 
         // ===== 动画速度 =====
         root.addView(spacer())
@@ -194,18 +222,21 @@ class SettingsActivity : Activity() {
         animPreview.layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(130))
         root.addView(animPreview)
-        root.addView(sliderRow("anim_switch", "切周动画", 300..1000,
+        root.addView(sliderRow("anim_switch", "切周动画", 0..1000,
             initValue = prefs.getInt("anim_switch", 300).toFloat(),
             text = { n -> "${n} ms" },
-            save = { n -> prefs.edit().putInt("anim_switch", n).apply() }))
-        root.addView(sliderRow("anim_back", "弹回动画", 300..1000,
+            save = { n -> prefs.edit().putInt("anim_switch", n).apply() },
+            defaultVal = 300))
+        root.addView(sliderRow("anim_back", "弹回动画", 0..1000,
             initValue = prefs.getInt("anim_back", 300).toFloat(),
             text = { n -> "${n} ms" },
-            save = { n -> prefs.edit().putInt("anim_back", n).apply() }))
-        root.addView(sliderRow("anim_cancel", "取消回弹", 300..1000,
+            save = { n -> prefs.edit().putInt("anim_back", n).apply() },
+            defaultVal = 300))
+        root.addView(sliderRow("anim_cancel", "取消回弹", 0..1000,
             initValue = prefs.getInt("anim_cancel", 300).toFloat(),
             text = { n -> "${n} ms" },
-            save = { n -> prefs.edit().putInt("anim_cancel", n).apply() }))
+            save = { n -> prefs.edit().putInt("anim_cancel", n).apply() },
+            defaultVal = 300))
         // 预览区支持手指左右滑动切换周；不自动播放。
 
         root.addView(spacer())
@@ -213,9 +244,18 @@ class SettingsActivity : Activity() {
             text = "恢复默认显示"
             setOnClickListener {
                 prefs.edit()
-                    .remove("font_course").remove("font_loc").remove("font_header")
-                    .remove("header_h").remove("cell_h").remove("name_y").remove("loc_y")
-                    .remove("anim_switch").remove("anim_back").remove("anim_cancel")
+                    .putFloat("font_course", dp(9).toFloat())
+                    .putFloat("font_loc", dp(8).toFloat())
+                    .putFloat("font_header", dp(11).toFloat())
+                    .putFloat("header_h", dp(48).toFloat())
+                    .putFloat("cell_h", dp(36).toFloat())
+                    .putFloat("name_y", 0.27f)
+                    .putFloat("loc_y", 0.60f)
+                    .putBoolean("show_sat", true)
+                    .putBoolean("show_sun", true)
+                    .putInt("anim_switch", 300)
+                    .putInt("anim_back", 300)
+                    .putInt("anim_cancel", 300)
                     .apply()
                 recreate()
                 Toast.makeText(this@SettingsActivity, "已恢复默认显示设置", Toast.LENGTH_SHORT).show()
@@ -228,14 +268,17 @@ class SettingsActivity : Activity() {
     /** 滑块变化后刷新预览显示。 */
     private fun refreshPreview() {
         preview.setDisplayStyle(
-            prefs.getFloat("font_course", dp(12).toFloat()),
-            prefs.getFloat("font_loc", dp(10).toFloat()),
-            prefs.getFloat("font_header", dp(15).toFloat()),
+            prefs.getFloat("font_course", dp(9).toFloat()),
+            prefs.getFloat("font_loc", dp(8).toFloat()),
+            prefs.getFloat("font_header", dp(11).toFloat()),
             prefs.getFloat("header_h", dp(48).toFloat()),
             prefs.getFloat("cell_h", 0f),
-            prefs.getFloat("name_y", 0.33f),
-            prefs.getFloat("loc_y", 0.78f)
+            prefs.getFloat("name_y", 0.27f),
+            prefs.getFloat("loc_y", 0.60f)
         )
+        preview.setShowDays(
+            prefs.getBoolean("show_sat", true),
+            prefs.getBoolean("show_sun", true))
         updatePreviewHeight()
         preview.invalidate()
     }
@@ -280,7 +323,7 @@ class SettingsActivity : Activity() {
     private fun sliderRow(
         prefKey: String, title: String, range: IntRange,
         initValue: Float, text: (Int) -> String, save: (Int) -> Unit,
-        onStop: ((Int) -> Unit)? = null
+        onStop: ((Int) -> Unit)? = null, defaultVal: Int? = null
     ): LinearLayout {
         val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val label = TextView(this).apply {
@@ -288,7 +331,10 @@ class SettingsActivity : Activity() {
             setTextColor(Color.parseColor("#444444"))
             setPadding(0, dp(8), 0, 0)
         }
-        fun refresh(progress: Int) { label.text = "$title：${text(progress)}" }
+        fun refresh(progress: Int) {
+            label.text = "$title：${text(progress)}" +
+                    if (progress == defaultVal) "（默认）" else ""
+        }
         val bar = SeekBar(this).apply {
             max = range.last - range.first
             progress = (initValue - range.first).roundToInt().coerceIn(0, max)
@@ -311,6 +357,42 @@ class SettingsActivity : Activity() {
         row.addView(label)
         row.addView(bar)
         return row
+    }
+
+    /** 开关行：左侧文字 + 右侧 Switch。 */
+    private fun switchRow(labelText: String, init: Boolean, on: (Boolean) -> Unit): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(10), 0, 0)
+            addView(TextView(this@SettingsActivity).apply {
+                text = labelText
+                textSize = 14f
+                setTextColor(Color.parseColor("#222222"))
+                layoutParams = LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            val sw = Switch(this@SettingsActivity).apply {
+                isChecked = init
+                setOnCheckedChangeListener { _, ch -> on(ch) }
+            }
+            addView(sw, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+
+    /** 首次进入设置时，把缺失的显示参数写入默认值（字号9/8/11、表高48、格高36、位置27%/60%）。 */
+    private fun ensureDefaults() {
+        val e = prefs.edit()
+        if (!prefs.contains("font_course")) e.putFloat("font_course", dp(9).toFloat())
+        if (!prefs.contains("font_loc")) e.putFloat("font_loc", dp(8).toFloat())
+        if (!prefs.contains("font_header")) e.putFloat("font_header", dp(11).toFloat())
+        if (!prefs.contains("header_h")) e.putFloat("header_h", dp(48).toFloat())
+        if (!prefs.contains("cell_h")) e.putFloat("cell_h", dp(36).toFloat())
+        if (!prefs.contains("name_y")) e.putFloat("name_y", 0.27f)
+        if (!prefs.contains("loc_y")) e.putFloat("loc_y", 0.60f)
+        if (!prefs.contains("show_sat")) e.putBoolean("show_sat", true)
+        if (!prefs.contains("show_sun")) e.putBoolean("show_sun", true)
+        e.apply()
     }
 
     private fun lpWithMargin(l: Int, t: Int, r: Int, b: Int): LinearLayout.LayoutParams =

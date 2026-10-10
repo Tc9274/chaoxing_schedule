@@ -102,7 +102,62 @@ class MainActivity : Activity() {
         DailyRefreshReceiver.scheduleDaily(this)
         ensureExactAlarmPermission()
 
-        // 有周缓存则直接显示上次查看的周；否则首次全量获取 1~20 周
+        // 链接为空时弹窗让用户填写，填好后加载数据
+        if (getUuid().isEmpty()) showLinkDialog() else initData()
+    }
+
+    /** 链接为空时弹出的填写对话框。 */
+    private fun showLinkDialog() {
+        val dlg = Dialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(18), dp(20), dp(16))
+        }
+        root.addView(TextView(this).apply {
+            text = "填写课表链接"
+            textSize = 17f
+            setTextColor(0xFF17365D.toInt())
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, 0, 0, dp(8))
+        })
+        root.addView(TextView(this).apply {
+            text = "请粘贴你的超星课表链接（或其中的 curriculumUuid）。保存后即可加载你的课表。"
+            textSize = 13f
+            setTextColor(0xFF666666.toInt())
+            setLineSpacing(0f, 1.3f)
+            setPadding(0, 0, 0, dp(12))
+        })
+        val input = EditText(this).apply {
+            hint = "https://kb.chaoxing.com/... 或 uuid"
+            textSize = 14f
+            setTextColor(0xFF222222.toInt())
+            setHintTextColor(0xFF999999.toInt())
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        root.addView(input, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        val btnLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(0, dp(14), 0, 0)
+        }
+        root.addView(colorButton("保存并进入", 0xFF3B6EB5.toInt()) {
+            val uuid = ScheduleApi.extractUuid(input.text.toString().trim())
+            if (uuid == null) {
+                Toast.makeText(this, "链接无效，请确认包含 curriculumUuid", Toast.LENGTH_SHORT).show()
+                return@colorButton
+            }
+            prefs.edit().putString("curriculum_uuid", uuid).apply()
+            dlg.dismiss()
+            initData()
+        }, btnLp)
+        dlg.setContentView(root)
+        dlg.setOnDismissListener { if (getUuid().isEmpty()) finish() }
+        dlg.setCancelable(false)
+        dlg.show()
+    }
+
+    /** 有链接后的加载流程：有缓存直接显示，否则首次全量获取。 */
+    private fun initData() {
         val hasAny = prefs.all.keys.any { it.startsWith("weekCache_") }
         if (hasAny) {
             showCachedWeek(getCachedViewWeek())
@@ -283,26 +338,32 @@ class MainActivity : Activity() {
     /** 课程标识：星期|开始节次|课名。 */
     private fun keyOf(lesson: Lesson): String = "${lesson.dayOfWeek}|${lesson.beginSection}|${lesson.course}"
 
-    /** 从设置读取显示参数并应用到课表。字号/表头高为 0 时用自动默认。 */
+    /** 从设置读取显示参数并应用到课表。字号/表头高为 0 时用默认；格子高 0=自动填满视口。 */
     private fun applyDisplayStyle() {
-        val fc = prefs.getFloat("font_course", 0f)
-        val fl = prefs.getFloat("font_loc", 0f)
-        val fh = prefs.getFloat("font_header", 0f)
-        val hh = prefs.getFloat("header_h", 0f)
+        fun dflt(k: String, fb: Float): Float {
+            val v = prefs.getFloat(k, 0f)
+            return if (v > 0) v else fb
+        }
+        val fc = dflt("font_course", dp(9).toFloat())
+        val fl = dflt("font_loc", dp(8).toFloat())
+        val fh = dflt("font_header", dp(11).toFloat())
+        val hh = dflt("header_h", dp(48).toFloat())
+        // 格子高：0=自动填满视口；未设置时默认 36dp
+        val cell = prefs.getFloat("cell_h", 0f)
+        val cellApply = if (prefs.contains("cell_h")) cell else dp(36).toFloat()
         scheduleView.setDisplayStyle(
-            if (fc > 0) fc else dp(12).toFloat(),
-            if (fl > 0) fl else dp(10).toFloat(),
-            if (fh > 0) fh else dp(15).toFloat(),
-            if (hh > 0) hh else dp(48).toFloat(),
-            prefs.getFloat("cell_h", 0f),
-            prefs.getFloat("name_y", 0.33f),
-            prefs.getFloat("loc_y", 0.78f)
+            fc, fl, fh, hh, cellApply,
+            prefs.getFloat("name_y", 0.27f),
+            prefs.getFloat("loc_y", 0.60f)
         )
         scheduleView.setAnimDurations(
             prefs.getInt("anim_switch", 300),
             prefs.getInt("anim_back", 300),
             prefs.getInt("anim_cancel", 300)
         )
+        scheduleView.setShowDays(
+            prefs.getBoolean("show_sat", true),
+            prefs.getBoolean("show_sun", true))
     }
 
     override fun onResume() {
@@ -501,10 +562,8 @@ class MainActivity : Activity() {
             setOnClickListener { onClick() }
         }
 
-    /** 读取用户填写的课表 uuid；未填写则用默认课表。 */
-    private fun getUuid(): String =
-        prefs.getString("curriculum_uuid", ScheduleApi.DEFAULT_UUID)
-            ?: ScheduleApi.DEFAULT_UUID
+    /** 读取用户填写的课表 uuid（未填写返回空串，启动时弹窗提示填写）。 */
+    private fun getUuid(): String = prefs.getString("curriculum_uuid", "") ?: ""
 
     /** 小圆角按钮。 */
     private fun pillButton(text: String, onClick: () -> Unit): TextView =
