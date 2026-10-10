@@ -10,3 +10,4 @@ local.properties
 
 # 临时截图等
 *.png
+!docs/tutorial/*.png
