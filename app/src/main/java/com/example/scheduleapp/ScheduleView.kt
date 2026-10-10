@@ -37,6 +37,7 @@ class ScheduleView @JvmOverloads constructor(
     var onLessonClick: ((Lesson) -> Unit)? = null
 
     private var headerH = dp(48f)
+    private val headerGap = dp(3f)   // 表头行与第一节之间的缝
     private var timeW = dp(58f)   // 节次列宽度（可调）
     private val labelPad = dp(8f)
 
@@ -88,8 +89,32 @@ class ScheduleView @JvmOverloads constructor(
         color = Color.WHITE; textSize = dp(12f); textAlign = Paint.Align.CENTER
     }
     private val locPaint = Paint().apply {
-        color = 0xFFE0E0E0.toInt(); textSize = dp(10f); textAlign = Paint.Align.CENTER
+        color = Color.WHITE; textSize = dp(10f); textAlign = Paint.Align.CENTER
     }
+    private var textColor = Color.WHITE   // 课程/位置文字颜色（黑/白/灰切换）
+    /** 设置文字颜色：黑/白/灰。 */
+    fun setTextColor(color: Int) {
+        textColor = color
+        coursePaint.color = color
+        locPaint.color = color
+        invalidate()
+    }
+
+    // 不同课程的柔和淡色池（同课程恒同色、跨周稳定）
+    private val courseColors = intArrayOf(
+        0xFFA8D8EA.toInt(), // 淡蓝
+        0xFFB9E4C9.toInt(), // 淡绿
+        0xFFF6D6AD.toInt(), // 淡橙
+        0xFFD5CAEF.toInt(), // 淡紫
+        0xFFF4C7C3.toInt(), // 淡粉
+        0xFFC3E8E3.toInt(), // 淡青
+        0xFFFFE3B0.toInt(), // 淡黄
+        0xFFBDE0FE.toInt(), // 浅蓝
+        0xFFDFD3C3.toInt(), // 淡褐
+        0xFFCCEBF1.toInt(), // 浅青蓝
+    )
+    private fun courseColor(course: String): Int =
+        courseColors[(course.hashCode() and 0x7fffffff) % courseColors.size]
 
     private val todayFill = Paint().apply { color = 0xFFFDEBD0.toInt() }
     private val headerTodayFill = Paint().apply { color = 0xFFF0B429.toInt() }
@@ -265,6 +290,15 @@ class ScheduleView @JvmOverloads constructor(
         }
     }
 
+    /** 外部触发一步切周动画（如点击周数回本周）。 */
+    fun slideStep(isNext: Boolean) = switchWeek(isNext)
+
+    /** 朝目标周滑一步（方向按当前 currentWeek 计算，避免与外部 viewWeek 不同步）。 */
+    fun slideTo(target: Int) {
+        if (target == currentWeek) return
+        switchWeek(target > currentWeek)
+    }
+
     /** 平移动画（弹性减速），可选结束回调。 */
     private fun animateOffset(from: Float, to: Float, duration: Long, end: (() -> Unit)? = null) {
         stopAnim()
@@ -314,7 +348,7 @@ class ScheduleView @JvmOverloads constructor(
         canvas.translate(xOff, 0f)
 
         val sectionCount = d.sectionTimes.size.coerceAtLeast(1)
-        val cellH = if (cellHOverride > 0) cellHOverride else (height - headerH) / sectionCount.toFloat()
+        val cellH = if (cellHOverride > 0) cellHOverride else (height - headerH - headerGap) / sectionCount.toFloat()
         val bodyW = width - timeW
 
         // 显示的天列：周一~周五恒显；周六、周日按开关决定（关闭则连表头一起消失，布局压缩）
@@ -333,47 +367,58 @@ class ScheduleView @JvmOverloads constructor(
 
         // 时间轴 + 网格
         for (s in 0 until sectionCount) {
-            val top = headerH + s * cellH
+            val top = headerH + headerGap + s * cellH
             // 横向网格线
             canvas.drawLine(timeW, top, width.toFloat(), top, gridPaint)
-            // 时间文字（节次 + 起止时间；两行=起/止分行无"-"，一行=起-止）
+            // 时间文字（节次 + 起止时间；两行=左"节次"+右上下时间隔开，一行=起-止）
             val time = d.sectionTimes.getOrNull(s)?.second ?: ""
             val start = time.substringBefore("-")
             val end = time.substringAfter("-")
-            val label = when {
-                timeTwoLine && start.isNotEmpty() && end.isNotEmpty() -> "${s + 1}节\n$start\n$end"
-                time.isNotEmpty() -> "${s + 1}节\n$time"
-                else -> "${s + 1}节"
-            }
             timeTextPaint.textAlign = Paint.Align.CENTER
-            drawMultiline(canvas, label, timeW / 2f, top + cellH / 2f, timeTextPaint, dp(10f))
+            if (timeTwoLine && start.isNotEmpty() && end.isNotEmpty()) {
+                // 按文本实际宽度整体居中："节"(数字上/节下) + 间隔 + 起止时间 组成一块，块中心对准节次列正中
+                val gap = dp(1f)
+                val cw = maxOf(timeTextPaint.measureText("${s + 1}"), timeTextPaint.measureText("节"))
+                val tw = maxOf(timeTextPaint.measureText(start), timeTextPaint.measureText(end))
+                val cx = timeW / 2f
+                val x1 = cx - (cw + gap + tw) / 2f + cw / 2f     // 节列中心
+                val x2 = x1 + cw / 2f + gap + tw / 2f             // 时间列中心
+                canvas.drawText("${s + 1}", x1, top + cellH * 0.40f, timeTextPaint)
+                canvas.drawText("节", x1, top + cellH * 0.64f, timeTextPaint)
+                canvas.drawText(start, x2, top + cellH * 0.36f, timeTextPaint)
+                canvas.drawText(end, x2, top + cellH * 0.70f, timeTextPaint)
+            } else {
+                val label = if (time.isNotEmpty()) "${s + 1}节\n$time" else "${s + 1}节"
+                drawMultiline(canvas, label, timeW / 2f, top + cellH / 2f, timeTextPaint, dp(12f))
+            }
         }
         // 底边 + 左边线
         canvas.drawLine(timeW, height.toFloat(), width.toFloat(), height.toFloat(), gridPaint)
-        canvas.drawLine(timeW, headerH, timeW, height.toFloat(), gridPaint)
+        canvas.drawLine(timeW, headerH + headerGap, timeW, height.toFloat(), gridPaint)
 
         // 被隐藏的周末列：若当周该列有课，在相应边界画绿线提示
         if (!showSat && d.lessons.any { it.dayOfWeek == 6 }) {
             val x = timeW + 5 * dayW   // 周五右
-            canvas.drawLine(x, headerH, x, height.toFloat(), weekendLinePaint)
+            canvas.drawLine(x, headerH + headerGap, x, height.toFloat(), weekendLinePaint)
         }
         if (!showSun && d.lessons.any { it.dayOfWeek == 7 }) {
             val x = timeW + days.size * dayW   // 显示区最右（周日原在最末列）
-            canvas.drawLine(x, headerH, x, height.toFloat(), weekendLinePaint)
+            canvas.drawLine(x, headerH + headerGap, x, height.toFloat(), weekendLinePaint)
         }
 
         // 课程块（仅主屏收集点击区域）
         if (collectRects) lessonRects.clear()
         for (lesson in d.lessons) {
             val dayCol = dayIndex[lesson.dayOfWeek] ?: continue   // 隐藏的天不在布局中
-            val top = headerH + (lesson.beginSection - 1) * cellH
+            val top = headerH + headerGap + (lesson.beginSection - 1) * cellH
             val bottom = top + lesson.length * cellH - dp(3f)
             val left = timeW + dayCol * dayW + dp(2f)
             val right = left + dayW - dp(4f)
             if (bottom <= top || right <= left) continue
             val rect = RectF(left, top, right, bottom)
             if (collectRects) lessonRects.add(rect to lesson)
-            canvas.drawRoundRect(rect, corner, corner, courseFill)
+            canvas.drawRoundRect(rect, corner, corner,
+                Paint(courseFill).apply { color = courseColor(lesson.course) })
             // 变更强调：边框变橙
             if (keyOf(lesson) in changeKeys) {
                 canvas.drawRoundRect(rect, corner, corner, changePaint)

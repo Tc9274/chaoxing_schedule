@@ -35,6 +35,7 @@ class MainActivity : Activity() {
     private var lastShownWeek = 0
     private var maxWeek = 0
     private val weekUpdateMs = HashMap<Int, Long>()   // 各周的刷新时间（状态行按当前查看周显示）
+    private var pendingReturnWeek = 0   // 点击周数回本周时的目标周（>0 表示正在滑动中）
     private var currentData: ScheduleData? = null
     private var currentChangeKeys: Set<String> = emptySet()
 
@@ -68,14 +69,12 @@ class MainActivity : Activity() {
             textSize = 13f
             setTextColor(0xFF2C7BB6.toInt())
             typeface = Typeface.DEFAULT_BOLD
-            // 点击蓝色周数回到真实本周
+            // 点击蓝色周数回到真实本周（滑动动画切回）
             setOnClickListener {
                 val rw = currentData?.currentWeek ?: viewWeek
                 if (rw != viewWeek) {
-                    viewWeek = rw
-                    prefs.edit().putInt("last_view_week", rw).apply()
-                    updateStatus()
-                    if (!showCachedWeek(rw)) fetchWeek(rw)
+                    pendingReturnWeek = rw
+                    scheduleView.slideTo(rw)
                 }
             }
         }
@@ -83,9 +82,20 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         wlp.setMargins(0, 0, dp(8), 0)
         row1.addView(weekLabel, wlp)
+        // 顶部"强调取消"：忽略当前所有变更强调（放在"设置"左边）
+        val cancelAllBtn = colorButton("强调取消", 0xFFE64A19.toInt()) {
+            val set = prefs.getStringSet("ignored_changes", emptySet())?.toMutableSet() ?: mutableSetOf()
+            set.addAll(currentChangeKeys)
+            prefs.edit().putStringSet("ignored_changes", set).apply()
+            refreshDisplay()
+        }
+        val cwlp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        cwlp.setMargins(dp(6), 0, 0, 0)
+        row1.addView(cancelAllBtn, cwlp)
         val slp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        slp.setMargins(0, 0, dp(8), 0)
+        slp.setMargins(dp(14), 0, dp(8), 0)
         row1.addView(settingsBtn, slp)
         row1.addView(refreshBtn)
         header.addView(row1)
@@ -105,6 +115,11 @@ class MainActivity : Activity() {
                 prefs.edit().putInt("last_view_week", week).apply()
                 updateStatus()
                 if (!showCachedWeek(week)) fetchWeek(week)
+            }
+            // 正在回本周的滑动中：未到目标周则延后到下一帧再滑一步（避免在动画回调里同步重启动画而闪换）
+            if (pendingReturnWeek in 1..9999) {
+                if (viewWeek == pendingReturnWeek) pendingReturnWeek = 0
+                else handler.post { scheduleView.slideTo(pendingReturnWeek) }
             }
         }
 
@@ -299,7 +314,7 @@ class MainActivity : Activity() {
         viewWeek = week
         lastShownWeek = week
         maxWeek = data.maxWeek
-        weekLabel.text = "第${data.currentWeek}周"   // 蓝色周数=真实本周，恒定不随切周变
+        weekLabel.text = "本周：第${data.currentWeek}周"   // 蓝色周数=真实本周，恒定不随切周变
         updateStatus()
     }
 
@@ -394,6 +409,11 @@ class MainActivity : Activity() {
             prefs.getBoolean("show_sun", true))
         scheduleView.setTimeWidth(prefs.getFloat("time_w", dp(58).toFloat()))
         scheduleView.setTimeTwoLine(prefs.getBoolean("time_two_line", true))
+        scheduleView.setTextColor(when (prefs.getInt("text_color", 1)) {
+            0 -> 0xFF000000.toInt()   // 黑
+            2 -> 0xFF9E9E9E.toInt()   // 灰
+            else -> 0xFFFFFFFF.toInt() // 白（默认）
+        })
     }
 
     override fun onResume() {
@@ -529,26 +549,33 @@ class MainActivity : Activity() {
         rg.addView(rbOne)
         rbAll.isChecked = true
         root.addView(rg)
-        val btnLp = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        btnLp.setMargins(0, dp(10), 0, 0)
-        root.addView(colorButton("保存显示设置", 0xFF3B6EB5.toInt()) {
+        // 三个操作按钮放一行
+        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun addAction(t: String, color: Int, act: () -> Unit) {
+            btnRow.addView(colorButton(t, color, act),
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    .apply { setMargins(0, 0, dp(6), 0) })
+        }
+        addAction("保存", 0xFF3B6EB5.toInt()) {
             saveDisplayRule(lesson, nameInput.text.toString().trim(),
                 locInput.text.toString().trim(), rbAll.isChecked)
             refreshDisplay()
             dlg.dismiss()
-        }, btnLp)
-        root.addView(divider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)))
-        root.addView(colorButton("取消本节强调", 0xFFFF9800.toInt()) {
+        }
+        addAction("强调取消", 0xFFFF9800.toInt()) {
             ignoreChange(keyOf(lesson), lesson.location)
             refreshDisplay()
             dlg.dismiss()
-        }, btnLp)
-        root.addView(colorButton("取消全部强调", 0xFFE64A19.toInt()) {
-            ignoreAllFor(lesson)
-            refreshDisplay()
-            dlg.dismiss()
-        }, btnLp)
+        }
+        val btnLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        btnLp.setMargins(0, dp(10), 0, 0)
+        root.addView(btnRow, btnLp)
+        // 弹窗圆角加大、背景半透明（能看到后面课表）
+        dlg.window?.setBackgroundDrawable(GradientDrawable().apply {
+            setColor(0xAAFFFFFF.toInt())
+            cornerRadius = dp(20).toFloat()
+        })
         dlg.setContentView(root)
         dlg.show()
     }
@@ -582,13 +609,14 @@ class MainActivity : Activity() {
     private fun colorButton(text: String, color: Int, onClick: () -> Unit): TextView =
         TextView(this).apply {
             this.text = text
-            textSize = 13f
+            textSize = 12f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setPadding(dp(4), dp(8), dp(4), dp(8))
             background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
+                shape = GradientDrawable.RECTANGLE   // 圆角方形
                 setColor(color)
+                cornerRadius = dp(8).toFloat()
             }
             setOnClickListener { onClick() }
         }

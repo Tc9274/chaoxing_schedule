@@ -192,11 +192,6 @@ class SettingsActivity : Activity() {
             save = { n -> prefs.edit().putFloat("time_w",
                 dp(n).toFloat()).apply(); refreshPreview() },
             defaultVal = 58))
-        root.addView(switchRow("时间分两行显示", prefs.getBoolean("time_two_line", true)) { on ->
-            prefs.edit().putBoolean("time_two_line", on).apply()
-            refreshPreview()
-        })
-
         root.addView(sliderRow("name_y", "课程名上下位置", 0..1000,
             initValue = prefs.getFloat("name_y", 0.27f) * 1000,
             text = { n -> "${(n / 10)}%" },
@@ -209,6 +204,11 @@ class SettingsActivity : Activity() {
             save = { n -> prefs.edit().putFloat("loc_y", n / 1000f).apply(); refreshPreview() },
             defaultVal = 600))
 
+        // ===== 显示选项 =====
+        root.addView(switchRow("时间分两行显示", prefs.getBoolean("time_two_line", true)) { on ->
+            prefs.edit().putBoolean("time_two_line", on).apply()
+            refreshPreview()
+        })
         // 是否显示周六、周日（关闭后该周周末有课时周五右侧画绿线提示）
         root.addView(switchRow("显示周六", prefs.getBoolean("show_sat", true)) { on ->
             prefs.edit().putBoolean("show_sat", on).apply()
@@ -218,6 +218,7 @@ class SettingsActivity : Activity() {
             prefs.edit().putBoolean("show_sun", on).apply()
             refreshPreview()
         })
+        root.addView(textColorRow())
 
         // ===== 动画速度 =====
         root.addView(spacer())
@@ -266,6 +267,7 @@ class SettingsActivity : Activity() {
                     .putBoolean("show_sat", true)
                     .putBoolean("show_sun", true)
                     .putBoolean("time_two_line", true)
+                    .putInt("text_color", 1)
                     .putInt("anim_switch", 300)
                     .putInt("anim_back", 300)
                     .putInt("anim_cancel", 300)
@@ -294,6 +296,11 @@ class SettingsActivity : Activity() {
             prefs.getBoolean("show_sun", true))
         preview.setTimeWidth(prefs.getFloat("time_w", dp(58).toFloat()))
         preview.setTimeTwoLine(prefs.getBoolean("time_two_line", true))
+        preview.setTextColor(when (prefs.getInt("text_color", 1)) {
+            0 -> 0xFF000000.toInt()
+            2 -> 0xFF9E9E9E.toInt()
+            else -> 0xFFFFFFFF.toInt()
+        })
         updatePreviewHeight()
         preview.invalidate()
     }
@@ -395,6 +402,51 @@ class SettingsActivity : Activity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         }
 
+    /** 文字颜色选择：黑/白/灰。 */
+    private fun textColorRow(): LinearLayout {
+        val choices = listOf("黑" to 0, "白" to 1, "灰" to 2)
+        val chips = mutableListOf<TextView>()
+        fun paintChips() {
+            val cur = prefs.getInt("text_color", 1)
+            for (c in chips) {
+                val sel = c.tag as Int == cur
+                c.setBackgroundColor(if (sel) Color.parseColor("#2C7BB6") else Color.parseColor("#EEEEEE"))
+                c.setTextColor(if (sel) Color.WHITE else Color.parseColor("#222222"))
+            }
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(10), 0, 0)
+            addView(TextView(this@SettingsActivity).apply {
+                text = "文字颜色"
+                textSize = 14f
+                setTextColor(Color.parseColor("#222222"))
+            })
+            val row = LinearLayout(this@SettingsActivity).apply { orientation = LinearLayout.HORIZONTAL }
+            choices.forEach { (name, v) ->
+                val c = TextView(this@SettingsActivity).apply {
+                    text = name
+                    textSize = 12f
+                    gravity = Gravity.CENTER
+                    setPadding(dp(8), dp(4), dp(8), dp(4))
+                    tag = v
+                    setOnClickListener {
+                        prefs.edit().putInt("text_color", tag as Int).apply()
+                        refreshPreview()
+                        paintChips()
+                    }
+                }
+                chips.add(c)
+                row.addView(c, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    .apply { setMargins(0, 0, dp(4), 0) })
+            }
+            addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(4) })
+            paintChips()
+        }
+    }
+
     /** 首次进入设置时，把缺失的显示参数写入默认值（字号9/8/11、表高48、格高36、位置27%/60%）。 */
     private fun ensureDefaults() {
         val e = prefs.edit()
@@ -409,6 +461,7 @@ class SettingsActivity : Activity() {
         if (!prefs.contains("show_sat")) e.putBoolean("show_sat", true)
         if (!prefs.contains("show_sun")) e.putBoolean("show_sun", true)
         if (!prefs.contains("time_two_line")) e.putBoolean("time_two_line", true)
+        if (!prefs.contains("text_color")) e.putInt("text_color", 1)
         e.apply()
     }
 
