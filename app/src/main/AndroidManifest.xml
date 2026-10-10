@@ -7,6 +7,8 @@
 
     <application
         android:label="课表"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
         android:allowBackup="true"
         android:supportsRtl="true">

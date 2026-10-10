@@ -161,7 +161,7 @@ class MainActivity : Activity() {
         })
         root.addView(TextView(this).apply {
             val url = "https://github.com/Tc9274/chaoxing_schedule"
-            val msg = "获取课表链接（学习通）：\n1. 常用 → 学生课表\n2. 右上角点「≡」菜单\n3. 点「复制链接」\n\n项目主页：\n$url"
+            val msg = "获取课表链接（学习通）：\n1. 常用（或应用中心） → 学生课表\n2. 右上角点「≡」菜单\n3. 点「复制链接」\n\n项目主页：\n$url"
             val sp = android.text.SpannableString(msg)
             val us = msg.indexOf(url)
             sp.setSpan(android.text.style.URLSpan(url), us, us + url.length,

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 深蓝圆角底 -->
+    <path
+        android:fillColor="#3B6EB5"
+        android:pathData="M12,0 h84 a12,12 0 0 1 12,12 v84 a12,12 0 0 1 -12,12 h-84 a12,12 0 0 1 -12,-12 v-84 a12,12 0 0 1 12,-12 z" />
+    <!-- 白色课表格子卡 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,30 h32 a4,4 0 0 1 4,4 v36 a4,4 0 0 1 -4,4 h-32 a4,4 0 0 1 -4,-4 v-36 a4,4 0 0 1 4,-4 z" />
+    <!-- 顶部星期表头 -->
+    <path
+        android:fillColor="#DDE4ED"
+        android:pathData="M38,30 h32 v11 h-32 z" />
+    <!-- 课程块：浅红 -->
+    <path
+        android:fillColor="#EF9A9A"
+        android:pathData="M38,41 h16 v15 h-16 z" />
+    <!-- 课程块：浅橙 -->
+    <path
+        android:fillColor="#FFCC80"
+        android:pathData="M54,41 h16 v15 h-16 z" />
+    <!-- 课程块：浅蓝 -->
+    <path
+        android:fillColor="#90CAF9"
+        android:pathData="M38,56 h32 v18 h-32 z" />
+    <!-- 网格分隔线 -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:pathData="M38,41 L70,41 M38,56 L70,56 M54,41 L54,56" />
+</vector>
