@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
 import android.view.View.MeasureSpec
 import android.view.ViewConfiguration
@@ -53,12 +54,22 @@ class ScheduleView @JvmOverloads constructor(
     private var maxWeek = 0
     var onWeekChanged: ((Int) -> Unit)? = null
 
+    // 相邻周数据（滑动时与当前周同时平移，避免切换空白）
+    private var prevData: ScheduleData? = null
+    private var nextData: ScheduleData? = null
+
+    // 动画时长（用户可调，毫秒）
+    private var animSwitchMs = 300L   // 切周动画
+    private var animBackMs = 300L     // 未切周时的弹回
+    private var animCancelMs = 300L   // 触摸取消时的回弹
+
     // 手势检测 + 平移动画
     private var downX = 0f
     private var downY = 0f
     private var isDragging = false
     private var offsetX = 0f                       // 当前绘制水平偏移（跟手/动画）
     private var animator: ValueAnimator? = null
+    private var velocityTracker: VelocityTracker? = null
     private val touchSlop by lazy { ViewConfiguration.get(context).scaledTouchSlop }
 
     private val bgPaint = Paint().apply { color = Color.WHITE }
@@ -136,19 +147,35 @@ class ScheduleView @JvmOverloads constructor(
         invalidate()
     }
 
+    /** 设置相邻周数据（上下周的缓存），供滑动时同步平移。 */
+    fun setAdjacentData(prev: ScheduleData?, next: ScheduleData?) {
+        prevData = prev
+        nextData = next
+        invalidate()
+    }
+
+    /** 设置动画时长（毫秒）：切周 / 弹回 / 取消回弹。 */
+    fun setAnimDurations(switchMs: Int, backMs: Int, cancelMs: Int) {
+        animSwitchMs = switchMs.toLong().coerceIn(50, 1000)
+        animBackMs = backMs.toLong().coerceIn(50, 1000)
+        animCancelMs = cancelMs.toLong().coerceIn(50, 1000)
+    }
+
     /** 课程标识：星期|开始节次|课名。 */
     fun keyOf(lesson: Lesson): String = "${lesson.dayOfWeek}|${lesson.beginSection}|${lesson.course}"
 
-    /** 跟手拖动切换周：手指移动时课表整体平移，松手后按位移决定切周或弹回。 */
+    /** 跟手拖动切换周：手指移动时课表整体平移，松手后按位移或甩动速度决定切周或弹回。 */
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
                 stopAnim()
                 downX = event.x; downY = event.y
                 isDragging = false
+                velocityTracker = VelocityTracker.obtain().apply { addMovement(event) }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                velocityTracker?.addMovement(event)
                 val dx = event.x - downX
                 val dy = event.y - downY
                 if (!isDragging && abs(dx) > touchSlop && abs(dx) > abs(dy)) {
@@ -163,10 +190,17 @@ class ScheduleView @JvmOverloads constructor(
             MotionEvent.ACTION_UP -> {
                 if (isDragging) {
                     val dx = event.x - downX
+                    velocityTracker?.apply {
+                        addMovement(event)
+                        computeCurrentVelocity(1000)
+                    }
+                    val vx = velocityTracker?.xVelocity ?: 0f
+                    velocityTracker?.recycle(); velocityTracker = null
                     isDragging = false
-                    // 拖过约 40% 屏宽则切周，否则弹回（可随时中途反向回拉）
-                    if (abs(dx) > width * 0.4f) switchWeek(dx < 0)
-                    else animateOffset(offsetX, 0f, 220)
+                    // 甩动：快速横向挥动（速度够大且有一定位移）也切周
+                    val fling = abs(vx) > 1200f && abs(dx) > touchSlop * 2f
+                    if (fling || abs(dx) > width * 0.4f) switchWeek(dx < 0)
+                    else animateOffset(offsetX, 0f, animBackMs)
                     return true
                 }
                 for ((rect, lesson) in lessonRects) {
@@ -179,25 +213,26 @@ class ScheduleView @JvmOverloads constructor(
             }
             MotionEvent.ACTION_CANCEL -> {
                 isDragging = false
-                animateOffset(offsetX, 0f, 180)
+                velocityTracker?.recycle(); velocityTracker = null
+                animateOffset(offsetX, 0f, animCancelMs)
                 return true
             }
         }
         return super.onTouchEvent(event)
     }
 
-    /** 左滑(isNext=true)切到下一周，右滑切上一周；带滑出/滑入动画。 */
+    /** 左滑(isNext=true)切到下一周，右滑切上一周；一段动画：当前屏滑出、相邻屏同步滑入，到位即切，无空白。 */
     private fun switchWeek(isNext: Boolean) {
         val target = currentWeek + (if (isNext) 1 else -1)
         if (target < 1 || target > maxWeek) {
-            animateOffset(offsetX, 0f, 220)   // 到边界弹回
+            animateOffset(offsetX, 0f, animBackMs)   // 到边界弹回
             return
         }
-        val sign = if (isNext) -1f else 1f     // 当前屏滑向 -width/+width，新屏从对面进入
-        animateOffset(offsetX, sign * width, 200) {
-            onWeekChanged?.invoke(target)
-            offsetX = -sign * width
-            animateOffset(offsetX, 0f, 200)
+        val sign = if (isNext) -1f else 1f     // 当前屏滑向 -width/+width，相邻屏从对面进入
+        animateOffset(offsetX, sign * width, animSwitchMs) {
+            offsetX = 0f                        // 相邻屏已就位，直接归位
+            onWeekChanged?.invoke(target)       // 切换数据（相邻屏数据随后更新）
+            invalidate()
         }
     }
 
@@ -234,10 +269,20 @@ class ScheduleView @JvmOverloads constructor(
             drawEmpty(canvas)
             return
         }
+        // 主屏：当前周
+        drawSchedule(canvas, d, offsetX, true)
+        // 相邻屏：滑动时从对面同步进入，避免切换空白
+        if (offsetX < 0) {
+            nextData?.let { drawSchedule(canvas, it, offsetX + width, false) }
+        } else if (offsetX > 0) {
+            prevData?.let { drawSchedule(canvas, it, offsetX - width, false) }
+        }
+    }
 
-        // 整体随 offsetX 平移（跟手拖动 / 切周动画）
+    /** 绘制一个周的完整课表（表头、网格、课程），整体按 xOff 平移。 */
+    private fun drawSchedule(canvas: Canvas, d: ScheduleData, xOff: Float, collectRects: Boolean) {
         canvas.save()
-        canvas.translate(offsetX, 0f)
+        canvas.translate(xOff, 0f)
 
         val sectionCount = d.sectionTimes.size.coerceAtLeast(1)
         val cellH = if (cellHOverride > 0) cellHOverride else (height - headerH) / sectionCount.toFloat()
@@ -263,8 +308,8 @@ class ScheduleView @JvmOverloads constructor(
         canvas.drawLine(timeW, height.toFloat(), width.toFloat(), height.toFloat(), gridPaint)
         canvas.drawLine(timeW, headerH, timeW, height.toFloat(), gridPaint)
 
-        // 课程块（接口已按周返回，显示该周全部课程）
-        lessonRects.clear()
+        // 课程块（仅主屏收集点击区域）
+        if (collectRects) lessonRects.clear()
         for (lesson in d.lessons) {
             if (lesson.dayOfWeek < 1 || lesson.dayOfWeek > 7) continue
             val dayCol = lesson.dayOfWeek - 1
@@ -274,7 +319,7 @@ class ScheduleView @JvmOverloads constructor(
             val right = left + dayW - dp(4f)
             if (bottom <= top || right <= left) continue
             val rect = RectF(left, top, right, bottom)
-            lessonRects.add(rect to lesson)
+            if (collectRects) lessonRects.add(rect to lesson)
             canvas.drawRoundRect(rect, corner, corner, courseFill)
             // 变更强调：边框变橙
             if (keyOf(lesson) in changeKeys) {
@@ -284,9 +329,9 @@ class ScheduleView @JvmOverloads constructor(
             val key = keyOf(lesson)
             val displayName = oneName[key] ?: nameMap[lesson.course] ?: lesson.course
             val displayLoc = oneLoc[key] ?: locMap[lesson.location] ?: lesson.location
-            // 课程名 + 教室：按整块高度布局，自适应字号完整显示
+            // 课程名 + 教室：按整块高度布局，统一字号，超出省略
             val cx = (left + right) / 2f
-            val blockH = lesson.length * cellH   // 跨节块用整块高度，空间充足
+            val blockH = lesson.length * cellH
             coursePaint.textSize = fontCourse
             drawFixed(canvas, displayName, cx, top + blockH * nameY, coursePaint,
                 right - left - labelPad, blockH * 0.5f)

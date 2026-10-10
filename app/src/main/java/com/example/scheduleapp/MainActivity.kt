@@ -208,6 +208,7 @@ class MainActivity : Activity() {
     private fun renderWeek(data: ScheduleData, week: Int, emphasize: Boolean) {
         currentData = data
         scheduleView.setData(data, todayDayOfWeek(), week)
+        scheduleView.setAdjacentData(parseCached(week - 1), parseCached(week + 1))
         applyDisplayStyle()
         scheduleView.setDisplayMaps(readStringMap("nameMap_"), readStringMap("locMap_"),
             readStringMap("oneName_"), readStringMap("oneLoc_"))
@@ -282,22 +283,38 @@ class MainActivity : Activity() {
     /** 课程标识：星期|开始节次|课名。 */
     private fun keyOf(lesson: Lesson): String = "${lesson.dayOfWeek}|${lesson.beginSection}|${lesson.course}"
 
-    /** 从设置读取显示参数并应用到课表。 */
+    /** 从设置读取显示参数并应用到课表。字号/表头高为 0 时用自动默认。 */
     private fun applyDisplayStyle() {
+        val fc = prefs.getFloat("font_course", 0f)
+        val fl = prefs.getFloat("font_loc", 0f)
+        val fh = prefs.getFloat("font_header", 0f)
+        val hh = prefs.getFloat("header_h", 0f)
         scheduleView.setDisplayStyle(
-            prefs.getFloat("font_course", dp(12).toFloat()),
-            prefs.getFloat("font_loc", dp(10).toFloat()),
-            prefs.getFloat("font_header", dp(15).toFloat()),
-            prefs.getFloat("header_h", dp(48).toFloat()),
+            if (fc > 0) fc else dp(12).toFloat(),
+            if (fl > 0) fl else dp(10).toFloat(),
+            if (fh > 0) fh else dp(15).toFloat(),
+            if (hh > 0) hh else dp(48).toFloat(),
             prefs.getFloat("cell_h", 0f),
             prefs.getFloat("name_y", 0.33f),
             prefs.getFloat("loc_y", 0.78f)
+        )
+        scheduleView.setAnimDurations(
+            prefs.getInt("anim_switch", 300),
+            prefs.getInt("anim_back", 300),
+            prefs.getInt("anim_cancel", 300)
         )
     }
 
     override fun onResume() {
         super.onResume()
         if (currentData != null) applyDisplayStyle()
+    }
+
+    /** 读取某周的缓存数据（供相邻屏滑动显示）。 */
+    private fun parseCached(week: Int): ScheduleData? {
+        if (week < 1) return null
+        val raw = prefs.getString("weekCache_$week", null) ?: return null
+        return try { ScheduleApi.parse(raw) } catch (e: Exception) { null }
     }
 
     /** 变更对比基准（上次手动刷新保存的当前周）。 */
