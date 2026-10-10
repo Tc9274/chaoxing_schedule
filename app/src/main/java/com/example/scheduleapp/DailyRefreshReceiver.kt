@@ -31,6 +31,7 @@ class DailyRefreshReceiver : BroadcastReceiver() {
                 }
             } finally {
                 pendingResult.finish()
+                ScheduleWidgetProvider.updateAll(context)   // 同步刷新桌面组件
                 scheduleDaily(context)
             }
         }.start()

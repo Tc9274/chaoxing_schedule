@@ -160,10 +160,19 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(8))
         })
         root.addView(TextView(this).apply {
-            text = "请粘贴你的超星课表链接（或其中的 curriculumUuid）。保存后即可加载你的课表。"
+            val url = "https://github.com/Tc9274/chaoxing_schedule"
+            val msg = "获取课表链接（学习通）：\n1. 常用 → 学生课表\n2. 右上角点「≡」菜单\n3. 点「复制链接」\n\n项目主页：\n$url"
+            val sp = android.text.SpannableString(msg)
+            val us = msg.indexOf(url)
+            sp.setSpan(android.text.style.URLSpan(url), us, us + url.length,
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            sp.setSpan(android.text.style.ForegroundColorSpan(0xFF3B6EB5.toInt()),
+                us, us + url.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            text = sp
             textSize = 13f
-            setTextColor(0xFF666666.toInt())
+            setTextColor(0xFF444444.toInt())
             setLineSpacing(0f, 1.3f)
+            movementMethod = android.text.method.LinkMovementMethod.getInstance()
             setPadding(0, 0, 0, dp(12))
         })
         val input = EditText(this).apply {
@@ -263,6 +272,7 @@ class MainActivity : Activity() {
                 handler.post {
                     renderWeek(data, week, true)
                     startTicker()
+                    ScheduleWidgetProvider.updateAll(this)   // App 内刷新后同步桌面组件
                     Toast.makeText(this, "更新成功（${data.lessonCount} 节）", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
@@ -283,7 +293,7 @@ class MainActivity : Activity() {
                 val raw = ScheduleApi.fetchRaw(uuid, week)
                 val data = ScheduleApi.parse(raw)
                 prefs.edit().putString("weekCache_$week", raw).putInt("last_view_week", week).apply()
-                handler.post { renderWeek(data, week, false) }
+                handler.post { renderWeek(data, week, false); ScheduleWidgetProvider.updateAll(this) }
             } catch (e: Exception) {
                 handler.post {
                     Toast.makeText(this, "获取第${week}周失败：${e.message ?: "网络错误"}", Toast.LENGTH_SHORT).show()

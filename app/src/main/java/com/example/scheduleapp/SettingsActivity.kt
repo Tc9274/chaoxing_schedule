@@ -49,6 +49,21 @@ class SettingsActivity : Activity() {
             setPadding(0, 0, 0, dp(12))
         })
 
+        // 项目主页链接（置顶，可点击）
+        root.addView(TextView(this).apply {
+            val url = "https://github.com/Tc9274/chaoxing_schedule"
+            val sp = android.text.SpannableString("项目主页：$url")
+            val us = sp.length - url.length
+            sp.setSpan(android.text.style.URLSpan(url), us, us + url.length,
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            sp.setSpan(android.text.style.ForegroundColorSpan(Color.parseColor("#3B6EB5")),
+                us, us + url.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            text = sp
+            textSize = 13f
+            movementMethod = android.text.method.LinkMovementMethod.getInstance()
+            setPadding(0, 0, 0, dp(10))
+        })
+
         // ===== 课表链接 =====
         root.addView(sectionTitle("课表链接"))
         root.addView(TextView(this).apply {
