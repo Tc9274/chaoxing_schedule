@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private var pendingReturnWeek = 0   // 点击周数回本周时的目标周（>0 表示正在滑动中）
     private var currentData: ScheduleData? = null
     private var currentChangeKeys: Set<String> = emptySet()
+    private var lastSeenDailyRun = 0L   // 主界面最后一次识别到的后台自动刷新
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -137,9 +138,10 @@ class MainActivity : Activity() {
 
         setContentView(root)
 
-        // 调度每天 8:00 后台刷新，并尝试申请精确闹钟权限
+        // 调度每天后台刷新，并尝试申请精确闹钟权限
         DailyRefreshReceiver.scheduleDaily(this)
         ensureExactAlarmPermission()
+        lastSeenDailyRun = prefs.getLong("last_daily_run", 0L)
 
         // 链接为空时弹窗让用户填写，填好后加载数据
         if (getUuid().isEmpty()) showLinkDialog() else initData()
@@ -431,6 +433,12 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // 后台定时刷新完成后，回到前台自动重读当前周缓存，反映最新数据
+        val dr = prefs.getLong("last_daily_run", 0L)
+        if (dr > 0 && dr != lastSeenDailyRun) {
+            lastSeenDailyRun = dr
+            if (viewWeek >= 1 && showCachedWeek(viewWeek)) updateStatus()
+        }
         if (currentData != null) applyDisplayStyle()
         updateStatus()   // 刷新状态行（含"更新于"时间）
     }

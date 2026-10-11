@@ -296,7 +296,67 @@ class SettingsActivity : Activity() {
             }
         })
 
+        // ===== 定时更新 =====
+        root.addView(spacer())
+        root.addView(sectionTitle("定时更新"))
+        root.addView(TextView(this).apply {
+            text = "每天自动后台刷新课表（全量更新本周及后续周，含桌面组件同步）。"
+            textSize = 13f
+            setTextColor(Color.parseColor("#666666"))
+            setLineSpacing(0f, 1.3f)
+            setPadding(0, 0, 0, dp(8))
+        })
+        root.addView(android.widget.Switch(this).apply {
+            text = "启用每日自动刷新"
+            textSize = 14f
+            isChecked = prefs.getBoolean("daily_refresh_enabled", true)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean("daily_refresh_enabled", checked).apply()
+                DailyRefreshReceiver.scheduleDaily(this@SettingsActivity)
+                Toast.makeText(this@SettingsActivity,
+                    if (checked) "已启用，将按下方时间自动刷新" else "已关闭每日自动刷新",
+                    Toast.LENGTH_SHORT).show()
+            }
+        }, lpWithMargin(0, 0, 0, dp(8)))
+        val timeText = TextView(this).apply {
+            text = "每天自动刷新时间：${prefs.getString("daily_refresh_time", "08:00") ?: "08:00"}"
+            textSize = 14f
+            setTextColor(Color.parseColor("#17365D"))
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+        }
+        root.addView(timeText, lpWithMargin(0, 0, 0, dp(6)))
+        timeText.setOnClickListener {
+            val cur = prefs.getString("daily_refresh_time", "08:00") ?: "08:00"
+            val h0 = cur.substringBefore(':').toIntOrNull() ?: 8
+            val m0 = cur.substringAfter(':').toIntOrNull() ?: 0
+            android.app.TimePickerDialog(this@SettingsActivity, { _, h, m ->
+                val t = String.format("%02d:%02d", h, m)
+                prefs.edit().putString("daily_refresh_time", t).apply()
+                timeText.text = "每天自动刷新时间：$t"
+                DailyRefreshReceiver.scheduleDaily(this@SettingsActivity)
+                Toast.makeText(this@SettingsActivity, "已设置，将在每天 $t 自动刷新", Toast.LENGTH_SHORT).show()
+            }, h0, m0, true).show()
+        }
+        root.addView(TextView(this).apply {
+            text = lastDailyText()
+            textSize = 13f
+            setTextColor(Color.parseColor("#666666"))
+            setPadding(0, 0, 0, dp(2))
+        })
+
         setContentView(scroll)
+    }
+
+    /** 上次自动刷新状态的显示文案。 */
+    private fun lastDailyText(): String {
+        val run = prefs.getLong("last_daily_run", 0L)
+        if (run <= 0) return "尚未自动刷新过"
+        val ok = prefs.getInt("last_daily_ok", 0)
+        val fail = prefs.getInt("last_daily_fail", 0)
+        val c = java.util.Calendar.getInstance().apply { timeInMillis = run }
+        val hm = String.format("%02d:%02d",
+            c.get(java.util.Calendar.HOUR_OF_DAY), c.get(java.util.Calendar.MINUTE))
+        return "上次自动刷新：$hm · 成功 $ok 周 · 失败 $fail 周"
     }
 
     /** 滑块变化后刷新预览显示。 */
