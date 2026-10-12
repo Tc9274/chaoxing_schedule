@@ -298,7 +298,26 @@ class SettingsActivity : Activity() {
 
         // ===== 定时更新 =====
         root.addView(spacer())
-        root.addView(sectionTitle("定时更新"))
+        val dailyTitleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        dailyTitleRow.addView(sectionTitle("定时更新"),
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        dailyTitleRow.addView(TextView(this).apply {
+            text = "全部更新"
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+            setBackgroundColor(Color.parseColor("#2C7BB6"))
+            setOnClickListener {
+                // 手动全量刷新：复用定时更新的抓取逻辑（1-20 周 + 同步桌面组件）
+                sendBroadcast(android.content.Intent(this@SettingsActivity, DailyRefreshReceiver::class.java))
+                Toast.makeText(this@SettingsActivity, "正在全量更新 1-20 周…", Toast.LENGTH_SHORT).show()
+            }
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(dailyTitleRow)
         root.addView(TextView(this).apply {
             text = "每天自动后台刷新课表（全量更新本周及后续周，含桌面组件同步）。"
             textSize = 13f
