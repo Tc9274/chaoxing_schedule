@@ -64,6 +64,7 @@ class ScheduleWidgetProvider : AppWidgetProvider() {
         const val ACTION_NEXT = "com.example.scheduleapp.ACTION_WIDGET_NEXT"
 
         private fun currentRealWeek(prefs: SharedPreferences): Int {
+            prefs.getInt("real_week", 0).takeIf { it > 0 }?.let { return it }
             val last = prefs.getInt("last_view_week", 0).coerceAtLeast(1)
             val raw = prefs.getString("weekCache_$last", null)
             if (raw != null) {
@@ -99,6 +100,8 @@ class ScheduleWidgetProvider : AppWidgetProvider() {
             // 左右切换
             views.setOnClickPendingIntent(R.id.widget_prev, pi(context, ACTION_PREV, 11))
             views.setOnClickPendingIntent(R.id.widget_next, pi(context, ACTION_NEXT, 12))
+            // 整个组件点击打开 App（列表项另有点开 App 的 PI，二者不冲突）
+            views.setOnClickPendingIntent(R.id.widget_root, openApp(context))
 
             // 课程列表数据源
             val svc = Intent(context, ScheduleWidgetService::class.java)
@@ -113,6 +116,15 @@ class ScheduleWidgetProvider : AppWidgetProvider() {
             PendingIntent.getBroadcast(context, req,
                 Intent(context, ScheduleWidgetProvider::class.java).setAction(action),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        /** 点击组件打开 App。 */
+        private fun openApp(context: Context): PendingIntent {
+            // 与点击 App 图标一致：用 launcher intent，保证回本周等行为与图标进入相同
+            val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                ?: Intent(context, MainActivity::class.java)
+            return PendingIntent.getActivity(context, 20, launch,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        }
 
         private fun hm(ms: Long): String =
             SimpleDateFormat("HH:mm", Locale.CHINA).format(ms)

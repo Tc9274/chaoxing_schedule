@@ -33,10 +33,13 @@ private class LessonFactory(
 
     private fun load() {
         val prefs = ctx.getSharedPreferences("schedule", Context.MODE_PRIVATE)
-        val last = prefs.getInt("last_view_week", 0).coerceAtLeast(1)
-        var realWeek = last
-        prefs.getString("weekCache_$last", null)?.let { raw ->
-            realWeek = try { ScheduleApi.parse(raw).currentWeek.coerceAtLeast(1) } catch (e: Exception) { last }
+        var realWeek = prefs.getInt("real_week", 0).takeIf { it > 0 } ?: 0
+        if (realWeek <= 0) {
+            val last = prefs.getInt("last_view_week", 0).coerceAtLeast(1)
+            realWeek = last
+            prefs.getString("weekCache_$last", null)?.let { raw ->
+                realWeek = try { ScheduleApi.parse(raw).currentWeek.coerceAtLeast(1) } catch (e: Exception) { last }
+            }
         }
         // 今天/明天（offset=0 今天，1 明天；周日看明天跨到下周）
         val offset = prefs.getInt("widget_view_offset", 0).coerceIn(0, 1)
@@ -97,10 +100,13 @@ private class LessonFactory(
         return rv
     }
 
-    private fun PendingIntentActivity(pos: Int) =
-        android.app.PendingIntent.getActivity(ctx, pos,
-            Intent(ctx, MainActivity::class.java),
+    private fun PendingIntentActivity(pos: Int): android.app.PendingIntent {
+        // 与点击 App 图标一致：用 launcher intent，保证回本周等行为与图标进入相同
+        val launch = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
+            ?: Intent(ctx, MainActivity::class.java)
+        return android.app.PendingIntent.getActivity(ctx, pos, launch,
             android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
+    }
 
     private fun lessonColor(l: Lesson, prefs: SharedPreferences): Int {
         val key = "${l.dayOfWeek}|${l.beginSection}|${l.course}"

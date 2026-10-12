@@ -330,14 +330,14 @@ class ScheduleView @JvmOverloads constructor(
     }
 
     /** 左滑(isNext=true)切到下一周，右滑切上一周；一段动画：当前屏滑出、相邻屏同步滑入，到位即切，无空白。 */
-    private fun switchWeek(isNext: Boolean) {
+    private fun switchWeek(isNext: Boolean, dur: Long = animSwitchMs) {
         val target = currentWeek + (if (isNext) 1 else -1)
         if (target < 1 || target > maxWeek) {
             animateOffset(offsetX, 0f, animBackMs)   // 到边界弹回
             return
         }
         val sign = if (isNext) -1f else 1f     // 当前屏滑向 -width/+width，相邻屏从对面进入
-        animateOffset(offsetX, sign * width, animSwitchMs) {
+        animateOffset(offsetX, sign * width, dur) {
             // 先切数据（此时新周仍停在新周相邻屏的位置，平滑无闪），再归位
             onWeekChanged?.invoke(target)
             offsetX = 0f
@@ -348,10 +348,10 @@ class ScheduleView @JvmOverloads constructor(
     /** 外部触发一步切周动画（如点击周数回本周）。 */
     fun slideStep(isNext: Boolean) = switchWeek(isNext)
 
-    /** 朝目标周滑一步（方向按当前 currentWeek 计算，避免与外部 viewWeek 不同步）。 */
+    /** 朝目标周滑一步（方向按当前 currentWeek 计算，避免与外部 viewWeek 不同步）。回本周/定位用较快的固定时长。 */
     fun slideTo(target: Int) {
         if (target == currentWeek) return
-        switchWeek(target > currentWeek)
+        switchWeek(target > currentWeek, 120L)
     }
 
     /** 平移动画（弹性减速），可选结束回调。 */

@@ -73,7 +73,7 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
             // 点击蓝色周数回到真实本周（滑动动画切回）
             setOnClickListener {
-                val rw = currentData?.currentWeek ?: viewWeek
+                val rw = realWeek().takeIf { it > 0 } ?: viewWeek
                 if (rw != viewWeek) {
                     pendingReturnWeek = rw
                     scheduleView.slideTo(rw)
@@ -206,15 +206,44 @@ class MainActivity : Activity() {
         dlg.show()
     }
 
-    /** 有链接后的加载流程：有缓存直接显示，否则首次全量获取。 */
+    /** 有链接后的加载流程：有缓存直接显示真实本周，否则首次全量获取。 */
     private fun initData() {
         val hasAny = prefs.all.keys.any { it.startsWith("weekCache_") }
         if (hasAny) {
-            showCachedWeek(getCachedViewWeek())
+            ensureRealWeek()
+            val rw = realWeek().takeIf { it > 0 } ?: getCachedViewWeek()
+            showCachedWeek(rw)
             startTicker()
+            // 每次进入主页都"激活一次回本周"：若显示的还不是真实本周，滑动切回（复用点击"本周"按钮逻辑）
+            handler.post {
+                val r = realWeek().takeIf { it > 0 } ?: return@post
+                if (r != viewWeek) {
+                    pendingReturnWeek = r
+                    scheduleView.slideTo(r)
+                }
+            }
         } else {
             fetchAllWeeksInitial()
         }
+    }
+
+    /** 确保真实本周有恒定值：缺失时取"最新抓取"的周解析接口字段确定（避免旧缓存给错值）。 */
+    private fun ensureRealWeek() {
+        if (prefs.getInt("real_week", 0) > 0) return
+        var bestKey: String? = null
+        var bestUpd = -1L
+        for (k in prefs.all.keys) {
+            if (k.startsWith("weekCache_")) {
+                val w = k.removePrefix("weekCache_").toIntOrNull() ?: continue
+                val up = prefs.getLong("weekUpdate_$w", 0)
+                if (up > bestUpd) { bestUpd = up; bestKey = k }
+            }
+        }
+        val raw = bestKey?.let { prefs.getString(it, null) } ?: return
+        try {
+            val w = ScheduleApi.parse(raw).currentWeek
+            if (w > 0) prefs.edit().putInt("real_week", w).apply()
+        } catch (e: Exception) { }
     }
 
     /** 首次启动：依次拉取 1~20 周全部缓存。 */
@@ -239,7 +268,9 @@ class MainActivity : Activity() {
                 handler.post { statusView.text = "首次获取课表 $p/20…" }
             }
             val week = realWeek.takeIf { it > 0 } ?: getCachedViewWeek()
-            prefs.edit().putInt("last_view_week", week).apply()
+            val ed = prefs.edit().putInt("last_view_week", week)
+            if (realWeek > 0) ed.putInt("real_week", realWeek)
+            ed.apply()
             handler.post {
                 weekUpdateMs[week] = System.currentTimeMillis()   // 首次获取完成也算一次更新
                 prefs.edit().putLong("weekUpdate_$week", weekUpdateMs[week]!!).apply()
@@ -266,6 +297,7 @@ class MainActivity : Activity() {
                     .putString("weekCache_$week", raw)
                     .putString("base_json", raw)
                     .putInt("last_view_week", week)
+                    .putInt("real_week", data.currentWeek)
                     .apply()
                 weekUpdateMs[week] = System.currentTimeMillis()
                 prefs.edit().putLong("weekUpdate_$week", weekUpdateMs[week]!!).apply()
@@ -294,7 +326,8 @@ class MainActivity : Activity() {
             try {
                 val raw = ScheduleApi.fetchRaw(uuid, week)
                 val data = ScheduleApi.parse(raw)
-                prefs.edit().putString("weekCache_$week", raw).putInt("last_view_week", week).apply()
+                prefs.edit().putString("weekCache_$week", raw).putInt("last_view_week", week)
+                    .putInt("real_week", data.currentWeek).apply()
                 handler.post { renderWeek(data, week, false); ScheduleWidgetProvider.updateAll(this) }
             } catch (e: Exception) {
                 handler.post {
@@ -317,20 +350,29 @@ class MainActivity : Activity() {
 
     /** 渲染某周课表。emphasize=true 时应用变更强调（手动刷新）。 */
     private fun renderWeek(data: ScheduleData, week: Int, emphasize: Boolean) {
-        currentData = data
-        scheduleView.setData(data, todayDayOfWeek(), week)
+        // 真实本周恒定（用最近抓取接口确认的值），避免旧缓存周解析出不一致的"本周"
+        val realW = realWeek()
+        val d = if (realW > 0 && data.currentWeek != realW) data.copy(currentWeek = realW) else data
+        currentData = d
+        scheduleView.setData(d, todayDayOfWeek(), week)
         scheduleView.setAdjacentData(parseCached(week - 1), parseCached(week + 1))
         applyDisplayStyle()
         scheduleView.setDisplayMaps(readStringMap("nameMap_"), readStringMap("locMap_"),
             readStringMap("oneName_"), readStringMap("oneLoc_"))
         scheduleView.setChangeKeys(if (emphasize) currentChangeKeys else emptySet())
-        val campus = if (data.campus.isNotEmpty()) " · ${data.campus}" else ""
-        infoBase = "${data.schoolYear}学年第${data.semester}学期$campus"
+        val campus = if (d.campus.isNotEmpty()) " · ${d.campus}" else ""
+        infoBase = "${d.schoolYear}学年第${d.semester}学期$campus"
         viewWeek = week
         lastShownWeek = week
-        maxWeek = data.maxWeek
-        weekLabel.text = "本周：第${data.currentWeek}周"   // 蓝色周数=真实本周，恒定不随切周变
+        maxWeek = d.maxWeek
+        weekLabel.text = "本周：第${d.currentWeek}周"   // 蓝色周数=真实本周，恒定不随切周变
         updateStatus()
+    }
+
+    /** 真实本周：优先用最近抓取接口确认的恒定值，避免旧缓存周解析出不一致。 */
+    private fun realWeek(): Int {
+        prefs.getInt("real_week", 0).takeIf { it > 0 }?.let { return it }
+        return currentData?.currentWeek ?: 0
     }
 
     private fun getCachedViewWeek(): Int {
@@ -438,6 +480,13 @@ class MainActivity : Activity() {
         if (dr > 0 && dr != lastSeenDailyRun) {
             lastSeenDailyRun = dr
             if (viewWeek >= 1 && showCachedWeek(viewWeek)) updateStatus()
+        }
+        // 每次回到前台（含从后台恢复）都"激活一次回本周"，与冷启动行为一致
+        ensureRealWeek()
+        val r = realWeek().takeIf { it > 0 }
+        if (r != null && r != viewWeek) {
+            pendingReturnWeek = r
+            scheduleView.slideTo(r)
         }
         if (currentData != null) applyDisplayStyle()
         updateStatus()   // 刷新状态行（含"更新于"时间）
@@ -655,11 +704,13 @@ class MainActivity : Activity() {
                 else prefs.edit().putInt("oneColor_${keyOf(lesson)}", pendingColor!!).apply()
             }
             refreshDisplay()
+            ScheduleWidgetProvider.updateAll(this)   // 改名/位置/颜色保存后同步组件
             dlg.dismiss()
         }
         addAction("强调取消", 0xFFFF9800.toInt()) {
             ignoreChange(keyOf(lesson), lesson.location)
             refreshDisplay()
+            ScheduleWidgetProvider.updateAll(this)   // 取消强调后同步组件
             dlg.dismiss()
         }
         val btnLp = LinearLayout.LayoutParams(

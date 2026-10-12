@@ -25,8 +25,11 @@ class DailyRefreshReceiver : BroadcastReceiver() {
                 for (w in 1..20) {
                     try {
                         val raw = ScheduleApi.fetchRaw(uuid, w)
-                        prefs.edit().putString("weekCache_$w", raw)
-                            .putLong("weekUpdate_$w", System.currentTimeMillis()).apply()
+                        val wk = try { ScheduleApi.parse(raw).currentWeek } catch (e: Exception) { 0 }
+                        val ed = prefs.edit().putString("weekCache_$w", raw)
+                            .putLong("weekUpdate_$w", System.currentTimeMillis())
+                        if (wk > 0) ed.putInt("real_week", wk)   // 同步确认真实本周
+                        ed.apply()
                         ok++
                     } catch (e: Exception) {
                         fail++   // 单周失败跳过，不影响其它周
