@@ -27,6 +27,7 @@ class SettingsActivity : Activity() {
     private val density by lazy { resources.displayMetrics.density }
     private val preview by lazy { ScheduleView(this) }
     private var previewData: ScheduleData? = null
+    private var updateProgress: TextView? = null   // "全部更新"的进度文本
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -233,6 +234,10 @@ class SettingsActivity : Activity() {
             prefs.edit().putBoolean("show_sun", on).apply()
             refreshPreview()
         })
+        root.addView(switchRow("表头显示日期", prefs.getBoolean("show_header_date", true)) { on ->
+            prefs.edit().putBoolean("show_header_date", on).apply()
+            refreshPreview()
+        })
         root.addView(textColorRow())
 
         // ===== 动画速度 =====
@@ -311,13 +316,45 @@ class SettingsActivity : Activity() {
             setPadding(dp(14), dp(6), dp(14), dp(6))
             setBackgroundColor(Color.parseColor("#2C7BB6"))
             setOnClickListener {
-                // 手动全量刷新：复用定时更新的抓取逻辑（1-20 周 + 同步桌面组件）
-                sendBroadcast(android.content.Intent(this@SettingsActivity, DailyRefreshReceiver::class.java))
-                Toast.makeText(this@SettingsActivity, "正在全量更新 1-20 周…", Toast.LENGTH_SHORT).show()
+                val uuid = prefs.getString("curriculum_uuid", "") ?: ""
+                if (uuid.isEmpty()) {
+                    Toast.makeText(this@SettingsActivity, "请先填写课表链接", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val pb = updateProgress ?: return@setOnClickListener
+                pb.visibility = View.VISIBLE
+                pb.text = "全量更新 0/20"
+                Thread {
+                    var ok = 0
+                    for (w in 1..20) {
+                        try {
+                            val raw = ScheduleApi.fetchRaw(uuid, w)
+                            val wk = try { ScheduleApi.parse(raw).currentWeek } catch (e: Exception) { 0 }
+                            val ed = prefs.edit().putString("weekCache_$w", raw)
+                                .putLong("weekUpdate_$w", System.currentTimeMillis())
+                            if (wk > 0) ed.putInt("real_week", wk)
+                            ed.apply()
+                            ok++
+                        } catch (e: Exception) { }
+                        val p = ok
+                        pb.post { pb.text = "全量更新 $p/20" }
+                    }
+                    pb.post {
+                        pb.text = "全量更新完成（成功 $ok 周）"
+                        ScheduleWidgetProvider.updateAll(this@SettingsActivity)
+                        Toast.makeText(this@SettingsActivity, "全量更新完成", Toast.LENGTH_SHORT).show()
+                    }
+                }.start()
             }
         }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(dailyTitleRow)
+        root.addView(TextView(this).apply {
+            text = ""
+            textSize = 13f
+            setTextColor(Color.parseColor("#2C7BB6"))
+            visibility = View.GONE
+        }.also { updateProgress = it }, lpWithMargin(0, 0, 0, dp(2)))
         root.addView(TextView(this).apply {
             text = "每天自动后台刷新课表（全量更新本周及后续周，含桌面组件同步）。"
             textSize = 13f

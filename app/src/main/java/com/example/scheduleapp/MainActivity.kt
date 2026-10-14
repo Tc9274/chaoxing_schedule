@@ -2,7 +2,10 @@ package com.example.scheduleapp
 
 import android.app.Activity
 import android.app.Dialog
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -40,6 +43,16 @@ class MainActivity : Activity() {
     private var currentData: ScheduleData? = null
     private var currentChangeKeys: Set<String> = emptySet()
     private var lastSeenDailyRun = 0L   // 主界面最后一次识别到的后台自动刷新
+
+    // 定时刷新完成后，若 App 在前台，立即重读当前周显示（不必等滑动/回前台）
+    private val dailyDoneReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val dr = prefs.getLong("last_daily_run", 0L)
+            lastSeenDailyRun = dr
+            if (viewWeek >= 1 && showCachedWeek(viewWeek)) updateStatus()
+            ScheduleWidgetProvider.updateAll(this@MainActivity)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -145,6 +158,15 @@ class MainActivity : Activity() {
 
         // 链接为空时弹窗让用户填写，填好后加载数据
         if (getUuid().isEmpty()) showLinkDialog() else initData()
+
+        // 监听"定时刷新完成"，前台时立即重读当前周显示
+        registerReceiver(dailyDoneReceiver,
+            IntentFilter(DailyRefreshReceiver.ACTION_DAILY_DONE))
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try { unregisterReceiver(dailyDoneReceiver) } catch (e: Exception) { }
     }
 
     /** 链接为空时弹出的填写对话框。 */
@@ -464,6 +486,7 @@ class MainActivity : Activity() {
         scheduleView.setShowDays(
             prefs.getBoolean("show_sat", true),
             prefs.getBoolean("show_sun", true))
+        scheduleView.setShowHeaderDate(prefs.getBoolean("show_header_date", true))
         scheduleView.setTimeWidth(prefs.getFloat("time_w", dp(58).toFloat()))
         scheduleView.setTimeTwoLine(prefs.getBoolean("time_two_line", true))
         scheduleView.setTextColor(when (prefs.getInt("text_color", 1)) {

@@ -43,6 +43,8 @@ class DailyRefreshReceiver : BroadcastReceiver() {
             } finally {
                 pendingResult.finish()
                 ScheduleWidgetProvider.updateAll(context)   // 同步刷新桌面组件
+                // 通知前台的主界面立即重读显示（定时刷新完成）
+                context.sendBroadcast(Intent(ACTION_DAILY_DONE).setPackage(context.packageName))
                 scheduleDaily(context)
             }
         }.start()
@@ -50,6 +52,8 @@ class DailyRefreshReceiver : BroadcastReceiver() {
 
     companion object {
         private const val REQUEST_CODE = 202609
+        /** 定时刷新完成广播：主界面在前台时收到后立即重读当前周。 */
+        const val ACTION_DAILY_DONE = "com.example.scheduleapp.ACTION_DAILY_DONE"
 
         /** 按用户设置调度下一次后台刷新；未启用或已禁用则只取消旧闹钟。 */
         fun scheduleDaily(context: Context) {

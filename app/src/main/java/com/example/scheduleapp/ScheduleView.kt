@@ -51,6 +51,10 @@ class ScheduleView @JvmOverloads constructor(
     private var maxSectionCount = 0
     private var showSat = true      // 是否显示周六
     private var showSun = true      // 是否显示周日
+    private var showHeaderDate = true   // 表头每天下方显示当天日期
+
+    // 当前周每天的日期（index 1..7，格式 MM.dd），由该周课程日期推算
+    private var dayDates = arrayOfNulls<String>(8)
     private var timeTwoLine = true  // 节次时间两行（起/止分行）或一行（起-止）
 
     // 按周切换：当前查看周
@@ -81,6 +85,10 @@ class ScheduleView @JvmOverloads constructor(
     private val headerPaint = Paint().apply {
         color = Color.WHITE; textSize = dp(15f); typeface = android.graphics.Typeface.DEFAULT_BOLD
         textAlign = Paint.Align.CENTER
+    }
+    // 表头每天下方的日期小字
+    private val dateHeaderPaint = Paint().apply {
+        color = Color.WHITE; textSize = dp(10f); textAlign = Paint.Align.CENTER
     }
     private val timeTextPaint = Paint().apply {
         color = 0xFF666666.toInt(); textSize = dp(10f); textAlign = Paint.Align.CENTER
@@ -196,8 +204,40 @@ class ScheduleView @JvmOverloads constructor(
         maxSectionCount = schedule.sectionTimes.size
         maxWeek = schedule.maxWeek.coerceAtLeast(1)
         currentWeek = (week ?: schedule.currentWeek).coerceIn(1, maxWeek)
+        buildDayDates(schedule)
         requestLayout()
         invalidate()
+    }
+
+    /** 从该周课程的日期推算每天日期（MM.dd）。优先用带年的日期反推整周；否则直接映射有课的天的日期。 */
+    private fun buildDayDates(s: ScheduleData) {
+        dayDates = arrayOfNulls(8)
+        val anchor = s.lessons.firstOrNull { parseDateWithYear(it.date) != null }
+        if (anchor != null) {
+            val (y, mo, d) = parseDateWithYear(anchor.date)!!
+            val cal = java.util.Calendar.getInstance()
+            cal.clear()
+            cal.set(y, mo - 1, d)
+            // 该课所在星期 anchor.dayOfWeek（1=周一），反推该周周一
+            cal.add(java.util.Calendar.DAY_OF_YEAR, -(anchor.dayOfWeek.coerceIn(1, 7) - 1))
+            for (i in 1..7) {
+                dayDates[i] = String.format("%02d.%02d",
+                    cal.get(java.util.Calendar.MONTH) + 1, cal.get(java.util.Calendar.DAY_OF_MONTH))
+                cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+            }
+            return
+        }
+        // 无年份信息：直接映射有课天的日期
+        for (l in s.lessons) {
+            if (l.date.isBlank() || dayDates[l.dayOfWeek] != null) continue
+            val m = Regex("(\\d{1,2})-(\\d{1,2})").find(l.date) ?: continue
+            dayDates[l.dayOfWeek] = String.format("%02d.%02d", m.groupValues[1].toInt(), m.groupValues[2].toInt())
+        }
+    }
+
+    private fun parseDateWithYear(date: String): Triple<Int, Int, Int>? {
+        val m = Regex("(\\d{4})-(\\d{1,2})-(\\d{1,2})").find(date) ?: return null
+        return Triple(m.groupValues[1].toInt(), m.groupValues[2].toInt(), m.groupValues[3].toInt())
     }
 
     /** 应用显示设置（字号/表头高/格子高/内容位置），主界面调用。 */
@@ -266,6 +306,12 @@ class ScheduleView @JvmOverloads constructor(
     fun setShowDays(sat: Boolean, sun: Boolean) {
         showSat = sat
         showSun = sun
+        invalidate()
+    }
+
+    /** 设置表头每天下方是否显示当天日期。 */
+    fun setShowHeaderDate(show: Boolean) {
+        showHeaderDate = show
         invalidate()
     }
 
@@ -513,7 +559,15 @@ class ScheduleView @JvmOverloads constructor(
             canvas.drawRect(left, 0f, right, headerH, bg)
             // 今日标记
             if (isToday) headerPaint.color = Color.WHITE
-            drawTextCenter(canvas, days[i], (left + right) / 2f, headerH / 2f, headerPaint)
+            val cx = (left + right) / 2f
+            // 两行：上行周几、下行日期；表头太矮或开关关闭时保持单行居中
+            if (showHeaderDate && headerH >= dp(34f)) {
+                drawTextCenter(canvas, days[i], cx, headerH * 0.36f, headerPaint)
+                val dt = dayDates[i + 1]
+                if (dt != null) drawTextCenter(canvas, dt, cx, headerH * 0.76f, dateHeaderPaint)
+            } else {
+                drawTextCenter(canvas, days[i], cx, headerH / 2f, headerPaint)
+            }
         }
         canvas.drawRect(0f, 0f, timeW, headerH, if (isThisWeek) headerWeekendFill else headerNormalFill)
         drawTextCenter(canvas, "节次", timeW / 2f, headerH / 2f, headerPaint)
