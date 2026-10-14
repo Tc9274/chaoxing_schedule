@@ -53,8 +53,8 @@ class ScheduleView @JvmOverloads constructor(
     private var showSun = true      // 是否显示周日
     private var showHeaderDate = true   // 表头每天下方显示当天日期
 
-    // 当前周每天的日期（index 1..7，格式 MM.dd），由该周课程日期推算
-    private var dayDates = arrayOfNulls<String>(8)
+    // 每屏（周）每天的日期（index 1..7，格式 MM.dd），按 ScheduleData 缓存，滑动时各屏显示各自日期不闪
+    private val datesCache = java.util.IdentityHashMap<ScheduleData, Array<String?>>()
     private var timeTwoLine = true  // 节次时间两行（起/止分行）或一行（起-止）
 
     // 按周切换：当前查看周
@@ -204,40 +204,44 @@ class ScheduleView @JvmOverloads constructor(
         maxSectionCount = schedule.sectionTimes.size
         maxWeek = schedule.maxWeek.coerceAtLeast(1)
         currentWeek = (week ?: schedule.currentWeek).coerceIn(1, maxWeek)
-        buildDayDates(schedule)
         requestLayout()
         invalidate()
     }
 
-    /** 从该周课程的日期推算每天日期（MM.dd）。优先用带年的日期反推整周；否则直接映射有课的天的日期。 */
-    private fun buildDayDates(s: ScheduleData) {
-        dayDates = arrayOfNulls(8)
-        val anchor = s.lessons.firstOrNull { parseDateWithYear(it.date) != null }
+    /** 某屏（周）每天的日期。取该周任一课程的日期反推整周（周日等无课天也补上）；结果按数据对象缓存。 */
+    private fun datesFor(d: ScheduleData): Array<String?> {
+        datesCache[d]?.let { return it }
+        val arr = arrayOfNulls<String>(8)
+        val anchor = d.lessons.firstOrNull { parseDateAny(it.date) != null }
         if (anchor != null) {
-            val (y, mo, d) = parseDateWithYear(anchor.date)!!
+            val (y, mo, day) = parseDateAny(anchor.date)!!
             val cal = java.util.Calendar.getInstance()
             cal.clear()
-            cal.set(y, mo - 1, d)
+            cal.set(y, mo - 1, day)
             // 该课所在星期 anchor.dayOfWeek（1=周一），反推该周周一
             cal.add(java.util.Calendar.DAY_OF_YEAR, -(anchor.dayOfWeek.coerceIn(1, 7) - 1))
             for (i in 1..7) {
-                dayDates[i] = String.format("%02d.%02d",
+                arr[i] = String.format("%02d.%02d",
                     cal.get(java.util.Calendar.MONTH) + 1, cal.get(java.util.Calendar.DAY_OF_MONTH))
                 cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
             }
-            return
         }
-        // 无年份信息：直接映射有课天的日期
-        for (l in s.lessons) {
-            if (l.date.isBlank() || dayDates[l.dayOfWeek] != null) continue
-            val m = Regex("(\\d{1,2})-(\\d{1,2})").find(l.date) ?: continue
-            dayDates[l.dayOfWeek] = String.format("%02d.%02d", m.groupValues[1].toInt(), m.groupValues[2].toInt())
-        }
+        datesCache[d] = arr
+        return arr
     }
 
-    private fun parseDateWithYear(date: String): Triple<Int, Int, Int>? {
-        val m = Regex("(\\d{4})-(\\d{1,2})-(\\d{1,2})").find(date) ?: return null
-        return Triple(m.groupValues[1].toInt(), m.groupValues[2].toInt(), m.groupValues[3].toInt())
+    /** 解析课程日期：支持 yyyy-MM-dd（优先）与 MM-dd（无年时用今年）。 */
+    private fun parseDateAny(date: String): Triple<Int, Int, Int>? {
+        val m = Regex("(\\d{4})-(\\d{1,2})-(\\d{1,2})").find(date)
+        if (m != null) {
+            return Triple(m.groupValues[1].toInt(), m.groupValues[2].toInt(), m.groupValues[3].toInt())
+        }
+        val m2 = Regex("(\\d{1,2})-(\\d{1,2})").find(date)
+        if (m2 != null) {
+            val y = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+            return Triple(y, m2.groupValues[1].toInt(), m2.groupValues[2].toInt())
+        }
+        return null
     }
 
     /** 应用显示设置（字号/表头高/格子高/内容位置），主界面调用。 */
@@ -464,7 +468,7 @@ class ScheduleView @JvmOverloads constructor(
         val dayW = bodyW / days.size
 
         // 表头（该屏是本周时整行浅绿；当天保持黄色）
-        drawHeader(canvas, dayW, days, week == d.currentWeek)
+        drawHeader(canvas, dayW, days, week == d.currentWeek, datesFor(d))
 
         // 时间轴 + 网格
         for (s in 0 until sectionCount) {
@@ -545,7 +549,7 @@ class ScheduleView @JvmOverloads constructor(
         canvas.restore()
     }
 
-    private fun drawHeader(canvas: Canvas, dayW: Float, days: List<String>, isThisWeek: Boolean) {
+    private fun drawHeader(canvas: Canvas, dayW: Float, days: List<String>, isThisWeek: Boolean, dates: Array<String?>) {
         for (i in days.indices) {
             val left = timeW + i * dayW
             val right = left + dayW
@@ -563,7 +567,7 @@ class ScheduleView @JvmOverloads constructor(
             // 两行：上行周几、下行日期；表头太矮或开关关闭时保持单行居中
             if (showHeaderDate && headerH >= dp(34f)) {
                 drawTextCenter(canvas, days[i], cx, headerH * 0.36f, headerPaint)
-                val dt = dayDates[i + 1]
+                val dt = dates[i + 1]
                 if (dt != null) drawTextCenter(canvas, dt, cx, headerH * 0.76f, dateHeaderPaint)
             } else {
                 drawTextCenter(canvas, days[i], cx, headerH / 2f, headerPaint)
