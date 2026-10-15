@@ -76,7 +76,8 @@ private class LessonFactory(
         if (lessons.isEmpty()) {
             val empty = RemoteViews(ctx.packageName, R.layout.widget_schedule_item)
             empty.setTextViewText(R.id.item_course, "今天没课")
-            empty.setTextViewText(R.id.item_sub, "")
+            empty.setTextViewText(R.id.item_info, "")
+            empty.setTextViewText(R.id.item_loc, "")
             empty.setInt(R.id.item_root, "setBackgroundColor", 0xFF26282B.toInt())
             empty.setTextColor(R.id.item_course, 0xFFB0B6BC.toInt())
             empty.setOnClickPendingIntent(R.id.item_root, openPi)
@@ -93,8 +94,9 @@ private class LessonFactory(
 
         val rv = RemoteViews(ctx.packageName, R.layout.widget_schedule_item)
         rv.setTextViewText(R.id.item_course, name)
-        val sub = if (l.time.isEmpty()) "${l.sections}节 · $loc" else "${l.sections}节 ${l.time} · $loc"
-        rv.setTextViewText(R.id.item_sub, sub)
+        val sec = if (l.sections.endsWith("节")) l.sections else "${l.sections}节"
+        rv.setTextViewText(R.id.item_info, if (l.time.isEmpty()) sec else "$sec ${l.time}")
+        rv.setTextViewText(R.id.item_loc, loc)
         rv.setInt(R.id.item_root, "setBackgroundColor", lessonColor(l, prefs))
         rv.setOnClickPendingIntent(R.id.item_root, openPi)
         return rv

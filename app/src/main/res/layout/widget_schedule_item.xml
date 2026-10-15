@@ -18,11 +18,29 @@
         android:textSize="13sp"
         android:textStyle="bold" />
 
-    <TextView
+    <LinearLayout
         android:id="@+id/item_sub"
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textColor="#3A3A3A"
-        android:textSize="11sp"
-        android:layout_marginTop="2dp" />
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="2dp">
+
+        <TextView
+            android:id="@+id/item_info"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#3A3A3A"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/item_loc"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="end"
+            android:paddingEnd="10dp"
+            android:textColor="#3A3A3A"
+            android:textSize="11sp" />
+    </LinearLayout>
 </LinearLayout>

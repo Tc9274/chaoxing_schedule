@@ -1,9 +1,14 @@
 package com.example.scheduleapp
 
 import android.app.Activity
+import android.app.AlarmManager
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -28,6 +33,7 @@ class SettingsActivity : Activity() {
     private val preview by lazy { ScheduleView(this) }
     private var previewData: ScheduleData? = null
     private var updateProgress: TextView? = null   // "全部更新"的进度文本
+    private var alarmBtn: Button? = null           // 闹钟权限行的状态/开启按钮
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -400,7 +406,91 @@ class SettingsActivity : Activity() {
             setPadding(0, 0, 0, dp(2))
         })
 
+        // ===== 后台刷新权限 =====
+        root.addView(spacer())
+        root.addView(sectionTitle("后台刷新权限"))
+        root.addView(TextView(this).apply {
+            text = "真机（国产系统）可能限制后台刷新，请在系统设置里放行以下权限："
+            textSize = 13f
+            setTextColor(Color.parseColor("#666666"))
+            setLineSpacing(0f, 1.3f)
+            setPadding(0, 0, 0, dp(8))
+        })
+        // 闹钟权限
+        val alarmRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        alarmRow.addView(TextView(this).apply {
+            text = "闹钟权限（后台定时刷新）"
+            textSize = 14f
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        alarmRow.addView(Button(this).apply {
+            textSize = 12f
+            setOnClickListener { openExactAlarmSetting() }
+            alarmBtn = this
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(alarmRow, lpWithMargin(0, 0, 0, dp(6)))
+        // 自启动 / 后台运行
+        val autoRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        autoRow.addView(TextView(this).apply {
+            text = "自启动 / 后台运行"
+            textSize = 14f
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        autoRow.addView(Button(this).apply {
+            text = "去开启"
+            textSize = 12f
+            setBackgroundColor(Color.parseColor("#2C7BB6"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                try {
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:$packageName")))
+                } catch (e: Exception) {
+                    Toast.makeText(this@SettingsActivity, "无法跳转，请在系统设置的应用管理里手动允许", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(autoRow, lpWithMargin(0, 0, 0, dp(6)))
+        updatePermUi()
+
         setContentView(scroll)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updatePermUi()
+    }
+
+    /** 刷新闹钟权限行的状态（从系统权限设置页返回时也生效）。 */
+    private fun updatePermUi() {
+        alarmBtn?.let {
+            val granted = exactAlarmGranted()
+            it.text = if (granted) "已开启" else "去开启"
+            it.setTextColor(Color.WHITE)
+            it.setBackgroundColor(Color.parseColor(if (granted) "#2E7D32" else "#2C7BB6"))
+        }
+    }
+
+    private fun exactAlarmGranted(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        return try {
+            (getSystemService(AlarmManager::class.java)).canScheduleExactAlarms()
+        } catch (e: Exception) { true }
+    }
+
+    private fun openExactAlarmSetting() {
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                Uri.parse("package:$packageName")))
+        } catch (e: Exception) {
+            Toast.makeText(this, "无法跳转，请在系统设置里手动授予闹钟权限", Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** 上次自动刷新状态的显示文案。 */
