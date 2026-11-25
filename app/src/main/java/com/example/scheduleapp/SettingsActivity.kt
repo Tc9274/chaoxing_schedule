@@ -28,11 +28,15 @@ import kotlin.math.roundToInt
  */
 class SettingsActivity : Activity() {
 
+    companion object {
+        private const val REQ_LOGIN = 1002
+    }
+
     private val prefs by lazy { getSharedPreferences("schedule", MODE_PRIVATE) }
     private val density by lazy { resources.displayMetrics.density }
     private val preview by lazy { ScheduleView(this) }
     private var previewData: ScheduleData? = null
-    private var updateProgress: TextView? = null   // "全部更新"的进度文本
+    private var updateProgress: TextView? = null   // "完全更新"的进度文本
     private var alarmBtn: Button? = null           // 闹钟权限行的状态/开启按钮
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -71,58 +75,118 @@ class SettingsActivity : Activity() {
             setPadding(0, 0, 0, dp(10))
         })
 
-        // ===== 课表链接 =====
-        root.addView(sectionTitle("课表链接"))
+        // ===== 教务系统账号 =====
+        root.addView(sectionTitle("教务系统账号"))
         root.addView(TextView(this).apply {
-            text = "粘贴你自己的超星课表链接，或直接粘贴 curriculumUuid。"
+            text = "课表来自学校教务系统：\n${JwxtApi.HOME}\n" +
+                    "学号密码用于自动完成统一身份认证，只保存在本机。"
             textSize = 13f
             setTextColor(Color.parseColor("#666666"))
             setLineSpacing(0f, 1.3f)
             setPadding(0, 0, 0, dp(10))
         })
-        val inputRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val input = EditText(this).apply {
-            hint = "粘贴超星课表链接或 UUID"
+        val inputUser = EditText(this).apply {
+            hint = "学号"
             textSize = 14f
             setTextColor(Color.BLACK)
             setHintTextColor(Color.parseColor("#999999"))
-            gravity = Gravity.TOP
-            setSingleLine(false)
-            minLines = 1
+            setSingleLine(true)
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
-        input.setText(prefs.getString("curriculum_uuid", "") ?: "")
-        val clearBtn = TextView(this).apply {
-            text = "×"
-            textSize = 22f
-            setTextColor(Color.parseColor("#888888"))
-            gravity = Gravity.CENTER
-            setOnClickListener {
-                input.setText("")
-                Toast.makeText(this@SettingsActivity, "已清空，点击下方保存链接生效", Toast.LENGTH_SHORT).show()
+        inputUser.setText(prefs.getString("jw_user", "") ?: "")
+        root.addView(inputUser, lpWithMargin(0, 0, 0, dp(6)))
+        val passRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val inputPass = EditText(this).apply {
+            hint = "密码（留空则不修改）"
+            textSize = 14f
+            setTextColor(Color.BLACK)
+            setHintTextColor(Color.parseColor("#999999"))
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                    android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        val eye = EyeView(this).apply {
+            onToggle = { open ->
+                inputPass.inputType = if (open)
+                    android.text.InputType.TYPE_CLASS_TEXT or
+                            android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                else
+                    android.text.InputType.TYPE_CLASS_TEXT or
+                            android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                inputPass.setSelection(inputPass.text.length)
             }
         }
-        inputRow.addView(input, LinearLayout.LayoutParams(
+        passRow.addView(inputPass, LinearLayout.LayoutParams(
             0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        inputRow.addView(clearBtn, LinearLayout.LayoutParams(dp(46), dp(46)))
-        root.addView(inputRow, lpWithMargin(0, 0, 0, dp(6)))
+        passRow.addView(eye, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(passRow, lpWithMargin(0, 0, 0, dp(6)))
         root.addView(Button(this).apply {
-            text = "保存链接"
+            text = "保存并登录"
             setOnClickListener {
-                val uuid = ScheduleApi.extractUuid(input.text.toString().trim())
-                if (uuid == null) {
-                    Toast.makeText(this@SettingsActivity,
-                        "链接无效，请检查是否包含 curriculumUuid", Toast.LENGTH_SHORT).show()
+                val u = inputUser.text.toString().trim()
+                val p = inputPass.text.toString()
+                if (u.isEmpty()) {
+                    Toast.makeText(this@SettingsActivity, "请填写学号", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                prefs.edit().putString("curriculum_uuid", uuid).apply()
-                Toast.makeText(this@SettingsActivity, "已保存链接，返回主界面刷新即可", Toast.LENGTH_SHORT).show()
-                finish()
+                if (p.isEmpty() && !JwxtApi.hasAccount(prefs)) {
+                    Toast.makeText(this@SettingsActivity, "请填写密码", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                JwxtApi.saveAccount(prefs, u, p)
+                Toast.makeText(this@SettingsActivity, "正在登录教务系统…", Toast.LENGTH_SHORT).show()
+                Thread {
+                    try {
+                        JwxtApi.refreshAll(prefs)
+                        runOnUiThread {
+                            Toast.makeText(this@SettingsActivity, "登录成功，已获取课表", Toast.LENGTH_SHORT).show()
+                            ScheduleWidgetProvider.updateAll(this@SettingsActivity)
+                            finish()
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            Toast.makeText(this@SettingsActivity,
+                                "登录失败：${e.message ?: "网络错误"}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }.start()
             }
         }, lpWithMargin(0, 0, 0, dp(8)))
+        val logged = JwxtApi.hasLogin(prefs)
+        root.addView(TextView(this).apply {
+            text = if (logged) "当前状态：已登录" else "当前状态：未登录"
+            textSize = 13f
+            setTextColor(Color.parseColor(if (logged) "#2E7D32" else "#B23B3B"))
+            setPadding(0, 0, 0, dp(6))
+        })
+        root.addView(TextView(this).apply {
+            text = "登录不上？用网页登录（备用）"
+            textSize = 13f
+            setTextColor(Color.parseColor("#3B6EB5"))
+            setPadding(dp(4), dp(4), 0, dp(6))
+            setOnClickListener {
+                startActivityForResult(
+                    Intent(this@SettingsActivity, LoginWebActivity::class.java), REQ_LOGIN)
+            }
+        })
+        if (logged) {
+            root.addView(TextView(this).apply {
+                text = "退出登录"
+                textSize = 13f
+                setTextColor(Color.parseColor("#B23B3B"))
+                setPadding(dp(4), dp(4), 0, dp(6))
+                setOnClickListener {
+                    JwxtApi.clearLogin(prefs)
+                    Toast.makeText(this@SettingsActivity, "已退出登录", Toast.LENGTH_SHORT).show()
+                    recreate()
+                }
+            })
+        }
 
         // ===== 显示设置 =====
         root.addView(spacer())
@@ -316,39 +380,33 @@ class SettingsActivity : Activity() {
         dailyTitleRow.addView(sectionTitle("定时更新"),
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         dailyTitleRow.addView(TextView(this).apply {
-            text = "全部更新"
+            text = "完全更新"
             textSize = 13f
             setTextColor(Color.WHITE)
             setPadding(dp(14), dp(6), dp(14), dp(6))
             setBackgroundColor(Color.parseColor("#2C7BB6"))
             setOnClickListener {
-                val uuid = prefs.getString("curriculum_uuid", "") ?: ""
-                if (uuid.isEmpty()) {
-                    Toast.makeText(this@SettingsActivity, "请先填写课表链接", Toast.LENGTH_SHORT).show()
+                if (!JwxtApi.hasAccount(prefs) && !JwxtApi.hasLogin(prefs)) {
+                    Toast.makeText(this@SettingsActivity, "请先登录教务系统", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
                 val pb = updateProgress ?: return@setOnClickListener
                 pb.visibility = View.VISIBLE
-                pb.text = "全量更新 0/20"
+                pb.text = "正在完全更新（课表 + 周次）…"
                 Thread {
-                    var ok = 0
-                    for (w in 1..20) {
-                        try {
-                            val raw = ScheduleApi.fetchRaw(uuid, w)
-                            val wk = try { ScheduleApi.parse(raw).currentWeek } catch (e: Exception) { 0 }
-                            val ed = prefs.edit().putString("weekCache_$w", raw)
-                                .putLong("weekUpdate_$w", System.currentTimeMillis())
-                            if (wk > 0) ed.putInt("real_week", wk)
-                            ed.apply()
-                            ok++
-                        } catch (e: Exception) { }
-                        val p = ok
-                        pb.post { pb.text = "全量更新 $p/20" }
-                    }
-                    pb.post {
-                        pb.text = "全量更新完成（成功 $ok 周）"
-                        ScheduleWidgetProvider.updateAll(this@SettingsActivity)
-                        Toast.makeText(this@SettingsActivity, "全量更新完成", Toast.LENGTH_SHORT).show()
+                    try {
+                        val (cur, maxW) = JwxtApi.refreshAll(prefs)
+                        pb.post {
+                            pb.text = "更新完成：第 ${cur} 周 / 共 ${maxW} 周"
+                            ScheduleWidgetProvider.updateAll(this@SettingsActivity)
+                            Toast.makeText(this@SettingsActivity, "完全更新完成", Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (e: Exception) {
+                        pb.post {
+                            pb.text = "更新失败"
+                            Toast.makeText(this@SettingsActivity,
+                                "更新失败：${e.message ?: "网络错误"}", Toast.LENGTH_LONG).show()
+                        }
                     }
                 }.start()
             }
@@ -362,7 +420,7 @@ class SettingsActivity : Activity() {
             visibility = View.GONE
         }.also { updateProgress = it }, lpWithMargin(0, 0, 0, dp(2)))
         root.addView(TextView(this).apply {
-            text = "每天自动后台刷新课表（全量更新本周及后续周，含桌面组件同步）。"
+            text = "每天自动完全更新（课表 + 周次），并同步桌面组件。"
             textSize = 13f
             setTextColor(Color.parseColor("#666666"))
             setLineSpacing(0f, 1.3f)
@@ -381,15 +439,15 @@ class SettingsActivity : Activity() {
             }
         }, lpWithMargin(0, 0, 0, dp(8)))
         val timeText = TextView(this).apply {
-            text = "每天自动刷新时间：${prefs.getString("daily_refresh_time", "08:00") ?: "08:00"}"
+            text = "每天自动刷新时间：${prefs.getString("daily_refresh_time", "00:00") ?: "00:00"}"
             textSize = 14f
             setTextColor(Color.parseColor("#17365D"))
             setPadding(dp(12), dp(12), dp(12), dp(12))
         }
         root.addView(timeText, lpWithMargin(0, 0, 0, dp(6)))
         timeText.setOnClickListener {
-            val cur = prefs.getString("daily_refresh_time", "08:00") ?: "08:00"
-            val h0 = cur.substringBefore(':').toIntOrNull() ?: 8
+            val cur = prefs.getString("daily_refresh_time", "00:00") ?: "00:00"
+            val h0 = cur.substringBefore(':').toIntOrNull() ?: 0
             val m0 = cur.substringAfter(':').toIntOrNull() ?: 0
             android.app.TimePickerDialog(this@SettingsActivity, { _, h, m ->
                 val t = String.format("%02d:%02d", h, m)
@@ -673,6 +731,28 @@ class SettingsActivity : Activity() {
     }
 
     /** 首次进入设置时，把缺失的显示参数写入默认值（字号11/10/11、表高39、格高48、节次宽50、位置27%/60%）。 */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_LOGIN || resultCode != RESULT_OK) return
+        Toast.makeText(this, "登录成功，正在获取课表…", Toast.LENGTH_SHORT).show()
+        Thread {
+            try {
+                JwxtApi.refreshAll(prefs)
+                runOnUiThread {
+                    Toast.makeText(this, "已获取课表", Toast.LENGTH_SHORT).show()
+                    ScheduleWidgetProvider.updateAll(this)
+                    recreate()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this, "取课表失败：${e.message ?: "网络错误"}",
+                        Toast.LENGTH_LONG).show()
+                    recreate()
+                }
+            }
+        }.start()
+    }
+
     private fun ensureDefaults() {
         val e = prefs.edit()
         if (!prefs.contains("font_course")) e.putFloat("font_course", dp(11).toFloat())

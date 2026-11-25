@@ -41,11 +41,10 @@ class ScheduleWidgetProvider : AppWidgetProvider() {
     /** 联网重抓本周并更新组件。 */
     private fun refreshData(context: Context) {
         val prefs = context.getSharedPreferences("schedule", Context.MODE_PRIVATE)
-        val uuid = prefs.getString("curriculum_uuid", "") ?: ""
         Thread {
             try {
                 val week = currentRealWeek(prefs)
-                val raw = ScheduleApi.fetchRaw(uuid, week)
+                val raw = JwxtApi.fetchWeek(prefs, week, true)
                 val now = System.currentTimeMillis()
                 prefs.edit()
                     .putString("weekCache_$week", raw)

@@ -8,8 +8,8 @@ import android.content.Intent
 import java.util.Calendar
 
 /**
- * 每天 8:00 触发的后台刷新：把 1~20 周课表全部更新到本地缓存。
- * 完成后重调度下一天 8:00。
+ * 每天 0 点（默认，可在设置里改）触发的后台刷新：课表 + 周次表全部更新到本地缓存。
+ * 完成后重调度下一天同一时间。
  */
 class DailyRefreshReceiver : BroadcastReceiver() {
 
@@ -18,22 +18,13 @@ class DailyRefreshReceiver : BroadcastReceiver() {
         Thread {
             try {
                 val prefs = context.getSharedPreferences("schedule", Context.MODE_PRIVATE)
-                val uuid = prefs.getString("curriculum_uuid", ScheduleApi.DEFAULT_UUID)
-                    ?: ScheduleApi.DEFAULT_UUID
                 var ok = 0; var fail = 0
-                // 全量刷新 1~20 周，并同步更新各周"刷新时间"标记
-                for (w in 1..20) {
-                    try {
-                        val raw = ScheduleApi.fetchRaw(uuid, w)
-                        val wk = try { ScheduleApi.parse(raw).currentWeek } catch (e: Exception) { 0 }
-                        val ed = prefs.edit().putString("weekCache_$w", raw)
-                            .putLong("weekUpdate_$w", System.currentTimeMillis())
-                        if (wk > 0) ed.putInt("real_week", wk)   // 同步确认真实本周
-                        ed.apply()
-                        ok++
-                    } catch (e: Exception) {
-                        fail++   // 单周失败跳过，不影响其它周
-                    }
+                // 登录教务系统一次，拉整学期并生成全部周的缓存
+                try {
+                    val (_, maxW) = JwxtApi.refreshAll(prefs)
+                    ok = maxW
+                } catch (e: Exception) {
+                    fail = 1
                 }
                 prefs.edit()
                     .putLong("last_daily_run", System.currentTimeMillis())
@@ -60,8 +51,8 @@ class DailyRefreshReceiver : BroadcastReceiver() {
             val prefs = context.getSharedPreferences("schedule", Context.MODE_PRIVATE)
             cancelDaily(context)
             if (!prefs.getBoolean("daily_refresh_enabled", true)) return
-            val t = prefs.getString("daily_refresh_time", "08:00") ?: "08:00"
-            val hh = t.substringBefore(':').toIntOrNull() ?: 8
+            val t = prefs.getString("daily_refresh_time", "00:00") ?: "00:00"
+            val hh = t.substringBefore(':').toIntOrNull() ?: 0
             val mm = t.substringAfter(':').toIntOrNull() ?: 0
             val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val pi = PendingIntent.getBroadcast(context, REQUEST_CODE,

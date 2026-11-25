@@ -28,6 +28,10 @@ import java.util.Calendar
 
 class MainActivity : Activity() {
 
+    companion object {
+        private const val REQ_LOGIN = 1001
+    }
+
     private lateinit var titleView: TextView
     private lateinit var weekLabel: TextView
     private lateinit var statusView: TextView
@@ -152,12 +156,20 @@ class MainActivity : Activity() {
         setContentView(root)
 
         // 调度每天后台刷新，并尝试申请精确闹钟权限
+        // 旧版默认 08:00 → 一次性迁到 00:00（用户手动改过的时间保留）
+        if (!prefs.getBoolean("daily_time_migrated_zero", false)) {
+            val oldT = prefs.getString("daily_refresh_time", null)
+            if (oldT == null || oldT == "08:00") {
+                prefs.edit().putString("daily_refresh_time", "00:00").apply()
+            }
+            prefs.edit().putBoolean("daily_time_migrated_zero", true).apply()
+        }
         DailyRefreshReceiver.scheduleDaily(this)
         ensureExactAlarmPermission()
         lastSeenDailyRun = prefs.getLong("last_daily_run", 0L)
 
-        // 链接为空时弹窗让用户填写，填好后加载数据
-        if (getUuid().isEmpty()) showLinkDialog() else initData()
+        // 无账号且无登录态时弹窗，登录后加载数据
+        if (!JwxtApi.hasAccount(prefs) && !JwxtApi.hasLogin(prefs)) showLoginDialog() else initData()
 
         // 监听"定时刷新完成"，前台时立即重读当前周显示
         registerReceiver(dailyDoneReceiver,
@@ -169,63 +181,107 @@ class MainActivity : Activity() {
         try { unregisterReceiver(dailyDoneReceiver) } catch (e: Exception) { }
     }
 
-    /** 链接为空时弹出的填写对话框。 */
-    private fun showLinkDialog() {
+    /** 未登录时的账号弹窗：输入学号密码后后台静默登录，不弹网页。 */
+    private fun showLoginDialog() {
         val dlg = Dialog(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(18), dp(20), dp(16))
         }
         root.addView(TextView(this).apply {
-            text = "填写课表链接"
+            text = "登录教务系统"
             textSize = 17f
             setTextColor(0xFF17365D.toInt())
             typeface = Typeface.DEFAULT_BOLD
             setPadding(0, 0, 0, dp(8))
         })
         root.addView(TextView(this).apply {
-            val url = "https://github.com/Tc9274/chaoxing_schedule"
-            val msg = "获取课表链接（学习通）：\n1. 常用（或应用中心） → 学生课表\n2. 右上角点「≡」菜单\n3. 点「复制链接」\n\n项目主页：\n$url"
-            val sp = android.text.SpannableString(msg)
-            val us = msg.indexOf(url)
-            sp.setSpan(android.text.style.URLSpan(url), us, us + url.length,
-                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            sp.setSpan(android.text.style.ForegroundColorSpan(0xFF3B6EB5.toInt()),
-                us, us + url.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            text = sp
+            text = "输入学号和密码，App 会自动完成统一身份认证并获取课表。账号只保存在本机。"
             textSize = 13f
             setTextColor(0xFF444444.toInt())
             setLineSpacing(0f, 1.3f)
-            movementMethod = android.text.method.LinkMovementMethod.getInstance()
             setPadding(0, 0, 0, dp(12))
         })
-        val input = EditText(this).apply {
-            hint = "https://kb.chaoxing.com/... 或 uuid"
+        val inputUser = EditText(this).apply {
+            hint = "学号"
             textSize = 14f
             setTextColor(0xFF222222.toInt())
             setHintTextColor(0xFF999999.toInt())
+            setSingleLine(true)
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
-        root.addView(input, LinearLayout.LayoutParams(
+        root.addView(inputUser, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        val passRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        val inputPass = EditText(this).apply {
+            hint = "密码"
+            textSize = 14f
+            setTextColor(0xFF222222.toInt())
+            setHintTextColor(0xFF999999.toInt())
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                    android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        val eye = EyeView(this).apply {
+            onToggle = { open ->
+                inputPass.inputType = if (open)
+                    android.text.InputType.TYPE_CLASS_TEXT or
+                            android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                else
+                    android.text.InputType.TYPE_CLASS_TEXT or
+                            android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                inputPass.setSelection(inputPass.text.length)
+            }
+        }
+        passRow.addView(inputPass, LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        passRow.addView(eye, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(passRow, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         val btnLp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             setMargins(0, dp(14), 0, 0)
         }
-        root.addView(colorButton("保存并进入", 0xFF3B6EB5.toInt()) {
-            val uuid = ScheduleApi.extractUuid(input.text.toString().trim())
-            if (uuid == null) {
-                Toast.makeText(this, "链接无效，请确认包含 curriculumUuid", Toast.LENGTH_SHORT).show()
+        root.addView(colorButton("登录并获取课表", 0xFF3B6EB5.toInt()) {
+            val u = inputUser.text.toString().trim()
+            val p = inputPass.text.toString()
+            if (u.isEmpty() || p.isEmpty()) {
+                Toast.makeText(this, "请填写学号和密码", Toast.LENGTH_SHORT).show()
                 return@colorButton
             }
-            prefs.edit().putString("curriculum_uuid", uuid).apply()
+            JwxtApi.saveAccount(prefs, u, p)
             dlg.dismiss()
             initData()
         }, btnLp)
+        root.addView(TextView(this).apply {
+            text = "登录不上？改用网页登录"
+            textSize = 12f
+            setTextColor(0xFF3B6EB5.toInt())
+            gravity = android.view.Gravity.CENTER
+            setPadding(0, dp(12), 0, 0)
+            setOnClickListener {
+                dlg.dismiss()
+                startActivityForResult(Intent(this@MainActivity, LoginWebActivity::class.java), REQ_LOGIN)
+            }
+        })
         dlg.setContentView(root)
-        dlg.setOnDismissListener { if (getUuid().isEmpty()) finish() }
+        dlg.setOnDismissListener {
+            if (!JwxtApi.hasAccount(prefs) && !JwxtApi.hasLogin(prefs)) finish()
+        }
         dlg.setCancelable(false)
         dlg.show()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_LOGIN) {
+            if (resultCode == RESULT_OK) initData() else finish()
+        }
     }
 
     /** 有链接后的加载流程：有缓存直接显示真实本周，否则首次全量获取。 */
@@ -249,9 +305,9 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 确保真实本周有恒定值：缺失时取"最新抓取"的周解析接口字段确定（避免旧缓存给错值）。 */
+    /** 校准真实本周：本地有整学期数据就按当前口径重算并重建周缓存，否则退回读缓存里的 currentWeek。 */
     private fun ensureRealWeek() {
-        if (prefs.getInt("real_week", 0) > 0) return
+        if (JwxtApi.recalcWeeks(prefs) != null) return
         var bestKey: String? = null
         var bestUpd = -1L
         for (k in prefs.all.keys) {
@@ -264,75 +320,82 @@ class MainActivity : Activity() {
         val raw = bestKey?.let { prefs.getString(it, null) } ?: return
         try {
             val w = ScheduleApi.parse(raw).currentWeek
-            if (w > 0) prefs.edit().putInt("real_week", w).apply()
+            if (w > 0 && w != prefs.getInt("real_week", 0)) {
+                prefs.edit().putInt("real_week", w).apply()
+            }
         } catch (e: Exception) { }
     }
 
-    /** 首次启动：依次拉取 1~20 周全部缓存。 */
+    /** 首次启动：登录教务系统，一次拉取整学期并按周缓存。 */
     private fun fetchAllWeeksInitial() {
-        statusView.text = "首次获取课表 0/20…"
-        val uuid = getUuid()
+        statusView.text = "首次获取课表…"
         Thread {
-            var realWeek = 0
-            var ok = 0
-            for (w in 1..20) {
-                try {
-                    val raw = ScheduleApi.fetchRaw(uuid, w)
-                    prefs.edit().putString("weekCache_$w", raw).apply()
-                    ok++
-                    weekUpdateMs[w] = System.currentTimeMillis()   // 每成功获取一周都记录刷新时间
-                    prefs.edit().putLong("weekUpdate_$w", weekUpdateMs[w]!!).apply()
-                    if (realWeek == 0) realWeek = ScheduleApi.parse(raw).currentWeek
-                } catch (e: Exception) {
-                    // 单周失败跳过
-                }
-                val p = ok
-                handler.post { statusView.text = "首次获取课表 $p/20…" }
-            }
-            val week = realWeek.takeIf { it > 0 } ?: getCachedViewWeek()
-            val ed = prefs.edit().putInt("last_view_week", week)
-            if (realWeek > 0) ed.putInt("real_week", realWeek)
-            ed.apply()
-            handler.post {
-                weekUpdateMs[week] = System.currentTimeMillis()   // 首次获取完成也算一次更新
+            try {
+                val (cur, _) = JwxtApi.refreshAll(prefs)
+                val week = cur.takeIf { it > 0 } ?: getCachedViewWeek()
+                prefs.edit().putInt("last_view_week", week).putInt("real_week", cur).apply()
+                weekUpdateMs[week] = System.currentTimeMillis()
                 prefs.edit().putLong("weekUpdate_$week", weekUpdateMs[week]!!).apply()
-                showCachedWeek(week)
-                startTicker()
-                Toast.makeText(this, "首次课表获取完成", Toast.LENGTH_SHORT).show()
+                handler.post {
+                    showCachedWeek(week)
+                    startTicker()
+                    Toast.makeText(this, "首次课表获取完成", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                handler.post {
+                    if (isLoginError(e.message)) { goLogin(); return@post }
+                    statusView.text = "获取失败"
+                    Toast.makeText(this, "获取课表失败：${e.message ?: "网络错误"}", Toast.LENGTH_SHORT).show()
+                }
             }
         }.start()
     }
 
-    /** 手动刷新：只刷新当前正在看的这一周，并计算变更强调。 */
+    /** 是否是登录态失效类错误。 */
+    private fun isLoginError(msg: String?): Boolean =
+        msg != null && (msg.contains("登录已过期") || msg.contains("请先登录"))
+
+    private fun goLogin() {
+        Toast.makeText(this, "登录已过期，请重新登录", Toast.LENGTH_SHORT).show()
+        startActivityForResult(Intent(this, LoginWebActivity::class.java), REQ_LOGIN)
+    }
+
+    /**
+     * 普通刷新：只重拉课表并重建各周缓存，不拉周次表（本地没有周次表时才补拉一次）。
+     * 需要连周次一起更新用设置页的“完全更新”。
+     */
     private fun refresh() {
         val week = viewWeek.takeIf { it > 0 } ?: getCachedViewWeek()
-        statusView.text = "刷新第${week}周…"
-        val uuid = getUuid()
+        statusView.text = "正在刷新课表…"
         val baseRaw = prefs.getString("base_json", null)
         Thread {
             try {
-                val raw = ScheduleApi.fetchRaw(uuid, week)
+                val (cur, maxW) = JwxtApi.refreshKbOnly(prefs)
+                val showW = if (week in 1..maxW) week else cur.coerceIn(1, maxW)
+                val raw = prefs.getString("weekCache_$showW", null)
+                    ?: JwxtApi.fetchWeek(prefs, showW, false)
                 val data = ScheduleApi.parse(raw)
                 val old = try { baseRaw?.let { ScheduleApi.parse(it) } } catch (e: Exception) { null }
                 currentChangeKeys = computeChanges(old, data)
                 prefs.edit()
-                    .putString("weekCache_$week", raw)
                     .putString("base_json", raw)
-                    .putInt("last_view_week", week)
+                    .putInt("last_view_week", showW)
                     .putInt("real_week", data.currentWeek)
                     .apply()
-                weekUpdateMs[week] = System.currentTimeMillis()
-                prefs.edit().putLong("weekUpdate_$week", weekUpdateMs[week]!!).apply()
-                viewWeek = week
-                lastShownWeek = week
+                weekUpdateMs[showW] = System.currentTimeMillis()
+                viewWeek = showW
+                lastShownWeek = showW
                 handler.post {
-                    renderWeek(data, week, true)
+                    renderWeek(data, showW, true)
                     startTicker()
                     ScheduleWidgetProvider.updateAll(this)   // App 内刷新后同步桌面组件
-                    Toast.makeText(this, "更新成功（${data.lessonCount} 节）", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this,
+                        "课表已更新 · 本周第${data.currentWeek}周",
+                        Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 handler.post {
+                    if (isLoginError(e.message)) { goLogin(); return@post }
                     statusView.text = "加载失败，请检查网络"
                     Toast.makeText(this, "获取课表失败：${e.message ?: "网络错误"}", Toast.LENGTH_SHORT).show()
                 }
@@ -343,16 +406,16 @@ class MainActivity : Activity() {
     /** 切周无缓存时：请求该周并缓存。 */
     private fun fetchWeek(week: Int) {
         statusView.text = "加载第${week}周…"
-        val uuid = getUuid()
         Thread {
             try {
-                val raw = ScheduleApi.fetchRaw(uuid, week)
+                val raw = JwxtApi.fetchWeek(prefs, week, false)
                 val data = ScheduleApi.parse(raw)
                 prefs.edit().putString("weekCache_$week", raw).putInt("last_view_week", week)
                     .putInt("real_week", data.currentWeek).apply()
                 handler.post { renderWeek(data, week, false); ScheduleWidgetProvider.updateAll(this) }
             } catch (e: Exception) {
                 handler.post {
+                    if (isLoginError(e.message)) { goLogin(); return@post }
                     Toast.makeText(this, "获取第${week}周失败：${e.message ?: "网络错误"}", Toast.LENGTH_SHORT).show()
                     viewWeek = lastShownWeek
                     updateStatus()
@@ -791,7 +854,6 @@ class MainActivity : Activity() {
         }
 
     /** 读取用户填写的课表 uuid（未填写返回空串，启动时弹窗提示填写）。 */
-    private fun getUuid(): String = prefs.getString("curriculum_uuid", "") ?: ""
 
     /** 小圆角按钮。 */
     private fun pillButton(text: String, onClick: () -> Unit): TextView =
