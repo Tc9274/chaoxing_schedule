@@ -55,6 +55,7 @@ private class LessonFactory(
             raw = prefs.getString("weekCache_$realWeek", null)
         }
         val data = raw?.let { runCatching { ScheduleApi.parse(it) }.getOrNull() }
+            ?.let { CustomLessons.merge(it, targetWeek, prefs) }
         lessons = data?.lessons
             ?.filter { it.dayOfWeek == targetDay }
             ?.sortedBy { it.beginSection }

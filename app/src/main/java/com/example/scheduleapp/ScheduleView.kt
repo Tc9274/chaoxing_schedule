@@ -27,14 +27,18 @@ class ScheduleView @JvmOverloads constructor(
     private var data: ScheduleData? = null
     private var todayDay = 0   // 1=周一 … 7=周日；0 表示未知
 
-    // 变更强调 + 显示名替换配置
-    private var changeKeys: Set<String> = emptySet()
+    // 显示名替换配置
     private var nameMap: Map<String, String> = emptyMap()    // 全局：课名 -> 显示名
     private var locMap: Map<String, String> = emptyMap()     // 全局：位置 -> 显示位置
     private var oneName: Map<String, String> = emptyMap()    // 单节：key -> 显示名
     private var oneLoc: Map<String, String> = emptyMap()     // 单节：key -> 显示位置
+    // 重叠显示设置：pairId -> 画在前(淡)那节的 key / 只显示那节的 key（由 MainActivity 注入）
+    private var overlapFront: Map<String, String> = emptyMap()
+    private var overlapMode: Map<String, String> = emptyMap()
     private var lessonRects: MutableList<Pair<RectF, Lesson>> = mutableListOf()
     var onLessonClick: ((Lesson) -> Unit)? = null
+    /** 点击空白格子（非课程块）时回调：day=1..7，section=1 起。 */
+    var onEmptyClick: ((day: Int, section: Int) -> Unit)? = null
 
     private var headerH = dp(48f)
     private val headerGap = dp(3f)   // 表头行与第一节之间的缝
@@ -55,6 +59,8 @@ class ScheduleView @JvmOverloads constructor(
 
     // 每屏（周）每天的日期（index 1..7，格式 MM.dd），按 ScheduleData 缓存，滑动时各屏显示各自日期不闪
     private val datesCache = java.util.IdentityHashMap<ScheduleData, Array<String?>>()
+    // 每周周一日期（week -> yyyy-MM-dd），由周次表提供；课程 date 缺失时用它推表头日期
+    private var weekStarts: Map<Int, String> = emptyMap()
     private var timeTwoLine = true  // 节次时间两行（起/止分行）或一行（起-止）
 
     // 按周切换：当前查看周
@@ -185,10 +191,11 @@ class ScheduleView @JvmOverloads constructor(
     private val courseFill = Paint().apply {
         color = 0xFF3F9BFC.toInt(); style = Paint.Style.FILL
     }
-    private val changePaint = Paint().apply {
-        color = 0xFFFF9800.toInt(); style = Paint.Style.STROKE; strokeWidth = dp(2.5f)
-    }
     private val corner = dp(6f)
+    // 重叠课的红框（细）
+    private val conflictPaint = Paint().apply {
+        color = 0xFFE53935.toInt(); style = Paint.Style.STROKE; strokeWidth = dp(1.2f)
+    }
     private val weekendLinePaint = Paint().apply {
         color = 0xFF4CAF50.toInt(); style = Paint.Style.STROKE; strokeWidth = dp(3f)
     }
@@ -196,6 +203,57 @@ class ScheduleView @JvmOverloads constructor(
     private val headerWeekendFill = Paint().apply { color = 0xFFC6EAC9.toInt() } // 本周表头节次格浅绿
 
     init { isClickable = true }
+
+    companion object {
+        /** 课程唯一键（弹窗、重叠设置、颜色都用它）。 */
+        fun lessonKey(l: Lesson) = "${l.dayOfWeek}|${l.beginSection}|${l.course}"
+
+        /** 一对课程的无序 id（不管谁在前都一样）。 */
+        fun pairId(a: String, b: String) = if (a < b) "$a#$b" else "$b#$a"
+
+        /** 两节是否重叠（同一天的节次区间相交）。 */
+        fun rangesOverlap(a1: Int, l1: Int, a2: Int, l2: Int) = a1 < a2 + l2 && a2 < a1 + l1
+
+        /** 默认画在“前(淡)”的那节：开始晚的优先，其次节数少的。 */
+        fun defaultFrontKey(a: Lesson, b: Lesson): String {
+            if (a.beginSection != b.beginSection) {
+                return if (a.beginSection > b.beginSection) lessonKey(a) else lessonKey(b)
+            }
+            if (a.length != b.length) return if (a.length < b.length) lessonKey(a) else lessonKey(b)
+            return lessonKey(a)
+        }
+    }
+
+    /** 本屏的重叠状态：哪些有冲突、哪些被隐藏、哪些画在前(淡)。 */
+    private class OverlapState {
+        val conflicted = HashSet<String>()
+        val hidden = HashSet<String>()
+        val front = HashSet<String>()
+    }
+
+    private fun computeOverlap(ls: List<Lesson>): OverlapState {
+        val st = OverlapState()
+        for (i in ls.indices) {
+            val a = ls[i]
+            for (j in i + 1 until ls.size) {
+                val b = ls[j]
+                if (a.dayOfWeek != b.dayOfWeek) continue
+                if (!rangesOverlap(a.beginSection, a.length, b.beginSection, b.length)) continue
+                val ka = lessonKey(a); val kb = lessonKey(b)
+                if (ka == kb) continue
+                val pair = pairId(ka, kb)
+                st.conflicted.add(ka); st.conflicted.add(kb)
+                val mode = overlapMode[pair]
+                if (mode != null) {
+                    st.hidden.add(if (mode == ka) kb else ka)
+                    continue
+                }
+                val f = overlapFront[pair] ?: defaultFrontKey(a, b)
+                st.front.add(if (f == kb) kb else ka)
+            }
+        }
+        return st
+    }
 
     /** week 不为空时，强制以该周作为当前查看周（用于滑动切周拉取的数据）。 */
     fun setData(schedule: ScheduleData, today: Int, week: Int? = null) {
@@ -208,18 +266,37 @@ class ScheduleView @JvmOverloads constructor(
         invalidate()
     }
 
-    /** 某屏（周）每天的日期。取该周任一课程的日期反推整周（周日等无课天也补上）；结果按数据对象缓存。 */
-    private fun datesFor(d: ScheduleData): Array<String?> {
+    /** 设置每周周一的日期（来自学校周次表），用于表头日期兜底。 */
+    fun setWeekStarts(m: Map<Int, String>) {
+        if (m == weekStarts) return
+        weekStarts = m
+        datesCache.clear()
+        invalidate()
+    }
+
+    /** 某屏（周）每天的日期。优先按该周任一课程的日期反推整周；课程无日期时用周次表的周一日期兜底。 */
+    private fun datesFor(d: ScheduleData, week: Int): Array<String?> {
         datesCache[d]?.let { return it }
         val arr = arrayOfNulls<String>(8)
         val anchor = d.lessons.firstOrNull { parseDateAny(it.date) != null }
+        val cal = java.util.Calendar.getInstance()
+        cal.clear()
+        var ok = false
         if (anchor != null) {
             val (y, mo, day) = parseDateAny(anchor.date)!!
-            val cal = java.util.Calendar.getInstance()
-            cal.clear()
             cal.set(y, mo - 1, day)
             // 该课所在星期 anchor.dayOfWeek（1=周一），反推该周周一
             cal.add(java.util.Calendar.DAY_OF_YEAR, -(anchor.dayOfWeek.coerceIn(1, 7) - 1))
+            ok = true
+        } else {
+            val s = weekStarts[week]
+            val p = if (s != null) parseDateAny(s) else null
+            if (p != null) {
+                cal.set(p.first, p.second - 1, p.third)
+                ok = true
+            }
+        }
+        if (ok) {
             for (i in 1..7) {
                 arr[i] = String.format("%02d.%02d",
                     cal.get(java.util.Calendar.MONTH) + 1, cal.get(java.util.Calendar.DAY_OF_MONTH))
@@ -266,11 +343,6 @@ class ScheduleView @JvmOverloads constructor(
             MeasureSpec.getSize(heightMeasureSpec)   // 自适应：填满视口
         }
         setMeasuredDimension(measuredWidth, h)
-    }
-
-    fun setChangeKeys(keys: Set<String>) {
-        changeKeys = keys
-        invalidate()
     }
 
     fun setDisplayMaps(nm: Map<String, String>, lm: Map<String, String>,
@@ -320,7 +392,14 @@ class ScheduleView @JvmOverloads constructor(
     }
 
     /** 课程标识：星期|开始节次|课名。 */
-    fun keyOf(lesson: Lesson): String = "${lesson.dayOfWeek}|${lesson.beginSection}|${lesson.course}"
+    fun keyOf(lesson: Lesson): String = lessonKey(lesson)
+
+    /** 注入重叠显示设置（改动后调用即可刷新）。 */
+    fun setOverlapPrefs(front: Map<String, String>, mode: Map<String, String>) {
+        overlapFront = front
+        overlapMode = mode
+        invalidate()
+    }
 
     /** 跟手拖动切换周：手指移动时课表整体平移，松手后按位移或甩动速度决定切周或弹回。 */
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -367,6 +446,12 @@ class ScheduleView @JvmOverloads constructor(
                         return true
                     }
                 }
+                // 没点到课程 = 空白格：回调“添加课程”
+                if (abs(offsetX) < dp(2f)) {
+                    hitEmptyCell(event.x, event.y)?.let { (day, sec) ->
+                        onEmptyClick?.invoke(day, sec)
+                    }
+                }
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
@@ -377,6 +462,30 @@ class ScheduleView @JvmOverloads constructor(
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    /** 把点击坐标换算成“星期 + 节次”；点在左侧节次栏、表头或表格外时返回 null。 */
+    private fun hitEmptyCell(x: Float, y: Float): Pair<Int, Int>? {
+        val d = data ?: return null
+        val sectionCount = d.sectionTimes.size.coerceAtLeast(1)
+        if (x <= timeW || y < headerH + headerGap) return null
+        val cellH = if (cellHOverride > 0) cellHOverride
+        else (height - headerH - headerGap) / sectionCount.toFloat()
+        if (cellH <= 0f) return null
+        val s = ((y - headerH - headerGap) / cellH).toInt() + 1
+        if (s < 1 || s > sectionCount) return null
+        val days = 5 + (if (showSat) 1 else 0) + (if (showSun) 1 else 0)
+        val dayW = (width - timeW) / days
+        if (dayW <= 0f) return null
+        val idx = ((x - timeW) / dayW).toInt()
+        val day = when {
+            idx < 5 -> idx + 1
+            showSat && idx == 5 -> 6
+            showSat && showSun && idx == 6 -> 7
+            showSun && !showSat && idx == 5 -> 7
+            else -> return null
+        }
+        return day to s
     }
 
     /** 左滑(isNext=true)切到下一周，右滑切上一周；一段动画：当前屏滑出、相邻屏同步滑入，到位即切，无空白。 */
@@ -468,7 +577,7 @@ class ScheduleView @JvmOverloads constructor(
         val dayW = bodyW / days.size
 
         // 表头（该屏是本周时整行浅绿；当天保持黄色）
-        drawHeader(canvas, dayW, days, week == d.currentWeek, datesFor(d))
+        drawHeader(canvas, dayW, days, week == d.currentWeek, datesFor(d, week))
 
         // 时间轴 + 网格
         for (s in 0 until sectionCount) {
@@ -513,7 +622,12 @@ class ScheduleView @JvmOverloads constructor(
 
         // 课程块（仅主屏收集点击区域）
         if (collectRects) lessonRects.clear()
-        for (lesson in d.lessons) {
+        // 重叠处理：有冲突的课都画细红框；默认一节画深(后)、一节画淡(前)，顺序可在弹窗里交换/只留一节
+        val ov = computeOverlap(d.lessons)
+        val ordered = d.lessons.sortedBy { if (lessonKey(it) in ov.front) 1 else 0 }   // 淡的最后画（在上层）
+        for (lesson in ordered) {
+            val key = lessonKey(lesson)
+            if (key in ov.hidden) continue                 // “只显示另一节”时这一节不画、也不可点
             val dayCol = dayIndex[lesson.dayOfWeek] ?: continue   // 隐藏的天不在布局中
             val top = headerH + headerGap + (lesson.beginSection - 1) * cellH
             val bottom = top + lesson.length * cellH - dp(3f)
@@ -522,14 +636,13 @@ class ScheduleView @JvmOverloads constructor(
             if (bottom <= top || right <= left) continue
             val rect = RectF(left, top, right, bottom)
             if (collectRects) lessonRects.add(rect to lesson)
-            canvas.drawRoundRect(rect, corner, corner,
-                Paint(courseFill).apply { color = courseColor(lesson) })
-            // 变更强调：边框变橙
-            if (keyOf(lesson) in changeKeys) {
-                canvas.drawRoundRect(rect, corner, corner, changePaint)
+            val fill = Paint(courseFill).apply {
+                color = courseColor(lesson)
+                if (key in ov.front) alpha = 140          // 重叠时压在下面那节之上，画淡一点透出底色
             }
+            canvas.drawRoundRect(rect, corner, corner, fill)
+            if (key in ov.conflicted) canvas.drawRoundRect(rect, corner, corner, conflictPaint)
             // 显示名替换（单节优先，其次全局）
-            val key = keyOf(lesson)
             val displayName = oneName[key] ?: nameMap[lesson.course] ?: lesson.course
             val displayLoc = oneLoc[key] ?: locMap[lesson.location] ?: lesson.location
             // 课程名 + 教室：按整块高度布局，统一字号，超出省略
@@ -564,11 +677,17 @@ class ScheduleView @JvmOverloads constructor(
             // 今日标记
             if (isToday) headerPaint.color = Color.WHITE
             val cx = (left + right) / 2f
-            // 两行：上行周几、下行日期；表头太矮或开关关闭时保持单行居中
-            if (showHeaderDate && headerH >= dp(34f)) {
-                drawTextCenter(canvas, days[i], cx, headerH * 0.36f, headerPaint)
-                val dt = dates[i + 1]
-                if (dt != null) drawTextCenter(canvas, dt, cx, headerH * 0.76f, dateHeaderPaint)
+            // 两行：上行周几、下行日期；有日期才分两行，且两行整体垂直居中；无日期时周几单独居中
+            val dt = dates[i + 1]
+            if (showHeaderDate && headerH >= dp(34f) && dt != null) {
+                val fm1 = headerPaint.fontMetrics
+                val fm2 = dateHeaderPaint.fontMetrics
+                val h1 = fm1.descent - fm1.ascent
+                val h2 = fm2.descent - fm2.ascent
+                val gap = dp(1f)
+                val top = (headerH - (h1 + gap + h2)) / 2f + dp(1f)   // 视觉微调：整体下移 1dp
+                drawTextCenter(canvas, days[i], cx, top + h1 / 2f, headerPaint)
+                drawTextCenter(canvas, dt, cx, top + h1 + gap + h2 / 2f, dateHeaderPaint)
             } else {
                 drawTextCenter(canvas, days[i], cx, headerH / 2f, headerPaint)
             }

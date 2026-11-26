@@ -18,6 +18,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.HorizontalScrollView
@@ -45,7 +46,6 @@ class MainActivity : Activity() {
     private val weekUpdateMs = HashMap<Int, Long>()   // 各周的刷新时间（状态行按当前查看周显示）
     private var pendingReturnWeek = 0   // 点击周数回本周时的目标周（>0 表示正在滑动中）
     private var currentData: ScheduleData? = null
-    private var currentChangeKeys: Set<String> = emptySet()
     private var lastSeenDailyRun = 0L   // 主界面最后一次识别到的后台自动刷新
 
     // 定时刷新完成后，若 App 在前台，立即重读当前周显示（不必等滑动/回前台）
@@ -101,20 +101,9 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         wlp.setMargins(0, 0, dp(8), 0)
         row1.addView(weekLabel, wlp)
-        // 顶部"强调取消"：忽略当前所有变更强调（放在"设置"左边）
-        val cancelAllBtn = colorButton("强调取消", 0xFFE64A19.toInt()) {
-            val set = prefs.getStringSet("ignored_changes", emptySet())?.toMutableSet() ?: mutableSetOf()
-            set.addAll(currentChangeKeys)
-            prefs.edit().putStringSet("ignored_changes", set).apply()
-            refreshDisplay()
-        }
-        val cwlp = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        cwlp.setMargins(dp(6), 0, 0, 0)
-        row1.addView(cancelAllBtn, cwlp)
         val slp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        slp.setMargins(dp(14), 0, dp(8), 0)
+        slp.setMargins(0, 0, dp(8), 0)
         row1.addView(settingsBtn, slp)
         row1.addView(refreshBtn)
         header.addView(row1)
@@ -128,6 +117,8 @@ class MainActivity : Activity() {
 
         scheduleView = ScheduleView(this)
         scheduleView.onLessonClick = { lesson -> showLessonDialog(lesson) }
+        // 点空白格：添加自定义课程
+        scheduleView.onEmptyClick = { day, sec -> showAddLessonDialog(day, sec, null) }
         scheduleView.customColor = { name -> prefs.getInt("courseColor_$name", 0) }
         scheduleView.oneColor = { key -> prefs.getInt("oneColor_$key", 0) }
         scheduleView.onWeekChanged = { week ->
@@ -247,7 +238,29 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             setMargins(0, dp(14), 0, 0)
         }
-        root.addView(colorButton("登录并获取课表", 0xFF3B6EB5.toInt()) {
+        // 登录进度：转圈 + “正在登录…”（登录成功前一直显示）
+        val loadingRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            setPadding(0, dp(14), 0, 0)
+        }
+        val spinner = ProgressBar(this, null, android.R.attr.progressBarStyleSmall).apply {
+            isIndeterminate = true
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(0xFF3B6EB5.toInt())
+        }
+        loadingRow.addView(spinner, LinearLayout.LayoutParams(dp(20), dp(20)))
+        val loadingText = TextView(this).apply {
+            text = "正在登录并获取课表…"
+            textSize = 13f
+            setTextColor(0xFF3B6EB5.toInt())
+            setPadding(dp(10), 0, 0, 0)
+        }
+        loadingRow.addView(loadingText)
+        root.addView(loadingRow, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        lateinit var loginBtn: TextView
+        loginBtn = colorButton("登录并获取课表", 0xFF3B6EB5.toInt()) {
             val u = inputUser.text.toString().trim()
             val p = inputPass.text.toString()
             if (u.isEmpty() || p.isEmpty()) {
@@ -255,9 +268,30 @@ class MainActivity : Activity() {
                 return@colorButton
             }
             JwxtApi.saveAccount(prefs, u, p)
-            dlg.dismiss()
-            initData()
-        }, btnLp)
+            // 切到“登录中”：禁用输入、隐藏按钮、显示转圈
+            loginBtn.visibility = View.GONE
+            inputUser.isEnabled = false
+            inputPass.isEnabled = false
+            eye.visibility = View.GONE
+            spinner.visibility = View.VISIBLE
+            loadingText.setTextColor(0xFF3B6EB5.toInt())
+            loadingText.text = "正在登录并获取课表…"
+            loadingRow.visibility = View.VISIBLE
+            fetchAllWeeksInitial { ok, err ->
+                if (ok) {
+                    dlg.dismiss()
+                } else {
+                    loginBtn.visibility = View.VISIBLE
+                    inputUser.isEnabled = true
+                    inputPass.isEnabled = true
+                    eye.visibility = View.VISIBLE
+                    spinner.visibility = View.GONE
+                    loadingText.setTextColor(0xFFD32F2F.toInt())
+                    loadingText.text = "登录失败：${err ?: "网络错误"}"
+                }
+            }
+        }
+        root.addView(loginBtn, btnLp)
         root.addView(TextView(this).apply {
             text = "登录不上？改用网页登录"
             textSize = 12f
@@ -326,8 +360,8 @@ class MainActivity : Activity() {
         } catch (e: Exception) { }
     }
 
-    /** 首次启动：登录教务系统，一次拉取整学期并按周缓存。 */
-    private fun fetchAllWeeksInitial() {
+    /** 首次启动：登录教务系统，一次拉取整学期并按周缓存。onDone 用于登录弹窗等待结果。 */
+    private fun fetchAllWeeksInitial(onDone: ((Boolean, String?) -> Unit)? = null) {
         statusView.text = "首次获取课表…"
         Thread {
             try {
@@ -340,12 +374,15 @@ class MainActivity : Activity() {
                     showCachedWeek(week)
                     startTicker()
                     Toast.makeText(this, "首次课表获取完成", Toast.LENGTH_SHORT).show()
+                    onDone?.invoke(true, null)
                 }
             } catch (e: Exception) {
+                val msg = e.message ?: "网络错误"
                 handler.post {
-                    if (isLoginError(e.message)) { goLogin(); return@post }
+                    if (onDone != null) { onDone(false, msg); return@post }
+                    if (isLoginError(msg)) { goLogin(); return@post }
                     statusView.text = "获取失败"
-                    Toast.makeText(this, "获取课表失败：${e.message ?: "网络错误"}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "获取课表失败：$msg", Toast.LENGTH_SHORT).show()
                 }
             }
         }.start()
@@ -367,7 +404,6 @@ class MainActivity : Activity() {
     private fun refresh() {
         val week = viewWeek.takeIf { it > 0 } ?: getCachedViewWeek()
         statusView.text = "正在刷新课表…"
-        val baseRaw = prefs.getString("base_json", null)
         Thread {
             try {
                 val (cur, maxW) = JwxtApi.refreshKbOnly(prefs)
@@ -375,10 +411,7 @@ class MainActivity : Activity() {
                 val raw = prefs.getString("weekCache_$showW", null)
                     ?: JwxtApi.fetchWeek(prefs, showW, false)
                 val data = ScheduleApi.parse(raw)
-                val old = try { baseRaw?.let { ScheduleApi.parse(it) } } catch (e: Exception) { null }
-                currentChangeKeys = computeChanges(old, data)
                 prefs.edit()
-                    .putString("base_json", raw)
                     .putInt("last_view_week", showW)
                     .putInt("real_week", data.currentWeek)
                     .apply()
@@ -386,7 +419,7 @@ class MainActivity : Activity() {
                 viewWeek = showW
                 lastShownWeek = showW
                 handler.post {
-                    renderWeek(data, showW, true)
+                    renderWeek(data, showW)
                     startTicker()
                     ScheduleWidgetProvider.updateAll(this)   // App 内刷新后同步桌面组件
                     Toast.makeText(this,
@@ -412,7 +445,7 @@ class MainActivity : Activity() {
                 val data = ScheduleApi.parse(raw)
                 prefs.edit().putString("weekCache_$week", raw).putInt("last_view_week", week)
                     .putInt("real_week", data.currentWeek).apply()
-                handler.post { renderWeek(data, week, false); ScheduleWidgetProvider.updateAll(this) }
+                handler.post { renderWeek(data, week); ScheduleWidgetProvider.updateAll(this) }
             } catch (e: Exception) {
                 handler.post {
                     if (isLoginError(e.message)) { goLogin(); return@post }
@@ -429,22 +462,25 @@ class MainActivity : Activity() {
         val raw = prefs.getString("weekCache_$week", null) ?: return false
         val d = try { ScheduleApi.parse(raw) } catch (e: Exception) { null }
         if (d == null) return false
-        renderWeek(d, week, false)
+        renderWeek(d, week)
         return true
     }
 
-    /** 渲染某周课表。emphasize=true 时应用变更强调（手动刷新）。 */
-    private fun renderWeek(data: ScheduleData, week: Int, emphasize: Boolean) {
+    /** 渲染某周课表。 */
+    private fun renderWeek(data: ScheduleData, week: Int) {
         // 真实本周恒定（用最近抓取接口确认的值），避免旧缓存周解析出不一致的"本周"
         val realW = realWeek()
-        val d = if (realW > 0 && data.currentWeek != realW) data.copy(currentWeek = realW) else data
+        val d0 = if (realW > 0 && data.currentWeek != realW) data.copy(currentWeek = realW) else data
+        // 合并手动添加的课程（整学期固定 / 仅某一周）
+        val d = CustomLessons.merge(d0, week, prefs)
         currentData = d
+        scheduleView.setWeekStarts(JwxtApi.weekStartMap(prefs))
         scheduleView.setData(d, todayDayOfWeek(), week)
         scheduleView.setAdjacentData(parseCached(week - 1), parseCached(week + 1))
         applyDisplayStyle()
         scheduleView.setDisplayMaps(readStringMap("nameMap_"), readStringMap("locMap_"),
             readStringMap("oneName_"), readStringMap("oneLoc_"))
-        scheduleView.setChangeKeys(if (emphasize) currentChangeKeys else emptySet())
+        reloadOverlap()
         val campus = if (d.campus.isNotEmpty()) " · ${d.campus}" else ""
         infoBase = "${d.schoolYear}学年第${d.semester}学期$campus"
         viewWeek = week
@@ -582,46 +618,8 @@ class MainActivity : Activity() {
     private fun parseCached(week: Int): ScheduleData? {
         if (week < 1) return null
         val raw = prefs.getString("weekCache_$week", null) ?: return null
-        return try { ScheduleApi.parse(raw) } catch (e: Exception) { null }
-    }
-
-    /** 变更对比基准（上次手动刷新保存的当前周）。 */
-    private fun cachedData(): ScheduleData? {
-        val raw = prefs.getString("base_json", null) ?: return null
-        return try { ScheduleApi.parse(raw) } catch (e: Exception) { null }
-    }
-
-    /** 计算变更（位置变/调课/新增），过滤已忽略的。 */
-    private fun computeChanges(oldD: ScheduleData?, newD: ScheduleData): Set<String> {
-        if (oldD == null) return emptySet()
-        val res = HashSet<String>()
-        val newMap = newD.lessons.groupBy { keyOf(it) }
-        val oldMap = oldD.lessons.groupBy { keyOf(it) }
-        for ((k, list) in newMap) {
-            val n = list.first()
-            val o = oldMap[k]?.first()
-            val changed = (o == null) || (o.location != n.location)
-            if (changed && !isIgnored(k, n.location)) res.add(k)
-        }
-        return res
-    }
-
-    private fun isIgnored(k: String, loc: String): Boolean =
-        prefs.getStringSet("ignored_changes", emptySet())?.contains("$k@$loc") ?: false
-
-    private fun ignoreChange(k: String, loc: String) {
-        val set = prefs.getStringSet("ignored_changes", emptySet())?.toMutableSet() ?: mutableSetOf()
-        set.add("$k@$loc")
-        prefs.edit().putStringSet("ignored_changes", set).apply()
-    }
-
-    /** 取消该课名所有节的强调（持久化）。 */
-    private fun ignoreAllFor(lesson: Lesson) {
-        val set = prefs.getStringSet("ignored_changes", emptySet())?.toMutableSet() ?: mutableSetOf()
-        currentData?.lessons?.filter { it.course == lesson.course }?.forEach {
-            set.add("${keyOf(it)}@${it.location}")
-        }
-        prefs.edit().putStringSet("ignored_changes", set).apply()
+        val d = try { ScheduleApi.parse(raw) } catch (e: Exception) { null }
+        return d?.let { CustomLessons.merge(it, week, prefs) }
     }
 
     private fun readStringMap(prefix: String): Map<String, String> =
@@ -660,13 +658,398 @@ class MainActivity : Activity() {
         ed.apply()
     }
 
-    /** 显示名/强调设置变更后刷新渲染。 */
+    /** 显示名设置变更后刷新渲染。 */
     private fun refreshDisplay() {
-        val d = currentData ?: return
+        if (currentData == null) return
         scheduleView.setDisplayMaps(readStringMap("nameMap_"), readStringMap("locMap_"),
             readStringMap("oneName_"), readStringMap("oneLoc_"))
-        scheduleView.setChangeKeys(currentChangeKeys)
+        reloadOverlap()
         scheduleView.invalidate()
+    }
+
+    /** 重叠显示设置（前后顺序 / 只显示哪节）改动后重新注入视图。 */
+    private fun reloadOverlap() {
+        scheduleView.setOverlapPrefs(readStringMap("overlapFront_"), readStringMap("overlapMode_"))
+    }
+
+    /** 点空白格添加课程；editing 非空时为编辑已有自定义课程。 */
+    private fun showAddLessonDialog(day: Int, section: Int, editing: CustomLesson?) {
+        val dlg = Dialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(16), dp(20), dp(16))
+        }
+        val weekNames = arrayOf("", "一", "二", "三", "四", "五", "六", "日")
+        val dayName = weekNames[day.coerceIn(1, 7)]
+        root.addView(TextView(this).apply {
+            text = if (editing != null) "编辑课程" else "添加课程"
+            textSize = 16f
+            setTextColor(0xFF17365D.toInt())
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        root.addView(TextView(this).apply {
+            text = "周$dayName · 点在第 $section 节（起始节和节数可调整）"
+            textSize = 12f
+            setTextColor(0xFF777777.toInt())
+            setPadding(0, dp(4), 0, dp(6))
+        })
+        root.addView(fieldLabel("课程名（必填）"))
+        val nameInput = fieldInput(editing?.course ?: "")
+        nameInput.hint = "如：自习、社团活动"
+        root.addView(nameInput, fieldInputLp())
+        root.addView(fieldLabel("老师（可不填）"))
+        val teacherInput = fieldInput(editing?.teacher ?: "")
+        teacherInput.hint = "如：张老师"
+        root.addView(teacherInput, fieldInputLp())
+        root.addView(fieldLabel("地点（可不填）"))
+        val locInput = fieldInput(editing?.location ?: "")
+        locInput.hint = "如：图书馆 3 楼"
+        root.addView(locInput, fieldInputLp())
+
+        val sectionCount = currentData?.sectionTimes?.size?.coerceAtLeast(1) ?: 12
+        root.addView(fieldLabel("起始节"))
+        val secSpinner = android.widget.Spinner(this).apply {
+            adapter = android.widget.ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item, (1..sectionCount).map { "$it" })
+            setSelection((editing?.begin ?: section).coerceIn(1, sectionCount) - 1)
+        }
+        root.addView(secSpinner, fieldInputLp())
+        root.addView(fieldLabel("节数"))
+        val lenSpinner = android.widget.Spinner(this)
+        root.addView(lenSpinner, fieldInputLp())
+        var adjusting = false
+        fun bindLen(keep: Int) {
+            val begin = secSpinner.selectedItemPosition + 1
+            val maxLen = (sectionCount - begin + 1).coerceAtLeast(1)
+            lenSpinner.adapter = android.widget.ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item, (1..maxLen).map { "$it 节" })
+            lenSpinner.setSelection(keep.coerceIn(1, maxLen) - 1)
+        }
+        bindLen(editing?.length ?: 1)
+        secSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                if (adjusting) return
+                val keep = if (editing != null && pos + 1 == editing.begin) editing.length
+                else lenSpinner.selectedItemPosition + 1
+                adjusting = true
+                bindLen(keep)
+                adjusting = false
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) { }
+        }
+
+        // 上课周次：点开弹窗按周勾选（单周/双周/全选/本周四种快捷方式）
+        // 总周数取三者最大：课表数据、周次表（学校口径 20 周）、当前周
+        val tableMaxWeek = JwxtApi.weekStartMap(prefs).keys.maxOrNull() ?: 0
+        val maxWeek = maxOf(currentData?.maxWeek ?: viewWeek, tableMaxWeek, viewWeek).coerceAtLeast(1)
+        val weekNamesHint = TextView(this).apply { textSize = 12f; setTextColor(0xFF777777.toInt()) }
+        // 新增默认“本周”；编辑已有课沿用其周次（旧的“每周”数据展开成全选）
+        var pickedWeeks: List<Int> = editing?.let { it.weeks.ifEmpty { (1..maxWeek).toList() } }
+            ?: listOf(viewWeek.coerceIn(1, maxWeek))
+        fun refreshWeekRow() {
+            weekNamesHint.text = "上课周次：" + CustomLessons.weeksText(pickedWeeks) + "  （点击修改）"
+        }
+        refreshWeekRow()
+        val weekRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                setColor(0xFFF2F5F8.toInt())
+                cornerRadius = dp(8).toFloat()
+            }
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        weekRow.addView(weekNamesHint, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        weekRow.addView(TextView(this).apply {
+            text = "修改"
+            textSize = 12f
+            setTextColor(0xFF3B6EB5.toInt())
+            setPadding(dp(8), 0, 0, 0)
+        })
+        weekRow.setOnClickListener {
+            // 按当前选的起始节/节数算冲突周，换个位置再点会重新算
+            showWeekPickerDialog(
+                maxWeek, viewWeek, pickedWeeks,
+                day, secSpinner.selectedItemPosition + 1, lenSpinner.selectedItemPosition + 1,
+                editing?.id
+            ) { list ->
+                pickedWeeks = list
+                refreshWeekRow()
+            }
+        }
+        root.addView(fieldLabel("上课周次"))
+        root.addView(weekRow, fieldInputLp())
+
+        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun addBtn(t: String, color: Int, act: () -> Unit) {
+            btnRow.addView(colorButton(t, color, act),
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    .apply { setMargins(0, 0, dp(6), 0) })
+        }
+        addBtn("保存", 0xFF3B6EB5.toInt()) {
+            val name = nameInput.text.toString().trim()
+            if (name.isEmpty()) {
+                Toast.makeText(this, "请填写课程名", Toast.LENGTH_SHORT).show()
+                return@addBtn
+            }
+            val c = CustomLesson(
+                id = editing?.id ?: System.currentTimeMillis(),
+                course = name,
+                day = day.coerceIn(1, 7),
+                begin = secSpinner.selectedItemPosition + 1,
+                length = lenSpinner.selectedItemPosition + 1,
+                location = locInput.text.toString().trim(),
+                teacher = teacherInput.text.toString().trim(),
+                weeks = pickedWeeks
+            )
+            CustomLessons.upsert(prefs, c)
+            afterCustomChanged("已保存：周$dayName 第 ${c.begin} 节 · " +
+                    CustomLessons.weeksText(c.weeks))
+            dlg.dismiss()
+        }
+        if (editing != null) {
+            addBtn("删除", 0xFFE64A19.toInt()) {
+                CustomLessons.remove(prefs, editing.id)
+                afterCustomChanged("已删除这门自定义课程")
+                dlg.dismiss()
+            }
+        }
+        btnRow.addView(colorButton("取消", 0xFF9E9E9E.toInt()) { dlg.dismiss() },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        val btnLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        btnLp.setMargins(0, dp(12), 0, 0)
+        root.addView(btnRow, btnLp)
+
+        val scroll = ScrollView(this)
+        scroll.addView(root, android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT))
+        dlg.window?.setBackgroundDrawable(GradientDrawable().apply {
+            setColor(0xAAFFFFFF.toInt())
+            cornerRadius = dp(20).toFloat()
+        })
+        dlg.setContentView(scroll)
+        dlg.show()
+    }
+
+    /** 与这一节（同一天、节次相交）重叠的其他课。 */
+    private fun overlapsOf(lesson: Lesson): List<Lesson> {
+        val all = currentData?.lessons ?: return emptyList()
+        val myKey = scheduleView.keyOf(lesson)
+        return all.filter {
+            scheduleView.keyOf(it) != myKey && it.dayOfWeek == lesson.dayOfWeek &&
+                ScheduleView.rangesOverlap(lesson.beginSection, lesson.length, it.beginSection, it.length)
+        }
+    }
+
+    /**
+     * 某一节（day, begin, length）在哪些周会和已有课重叠。
+     * 已有课 = 各周缓存里学校的课 + 其他自定义课（编辑时排除正在编辑的那条）。
+     */
+    private fun conflictWeeksFor(day: Int, begin: Int, length: Int, excludeId: Long?, maxWeek: Int): Set<Int> {
+        val out = HashSet<Int>()
+        val customs = CustomLessons.load(prefs).filter { it.id != excludeId }
+        for (w in 1..maxWeek) {
+            var hit = false
+            val raw = prefs.getString("weekCache_$w", null)
+            if (raw != null) {
+                val d = try { ScheduleApi.parse(raw) } catch (e: Exception) { null }
+                if (d != null) hit = d.lessons.any {
+                    it.dayOfWeek == day && ScheduleView.rangesOverlap(begin, length, it.beginSection, it.length)
+                }
+            }
+            if (!hit) hit = customs.any {
+                it.day == day && (it.weeks.isEmpty() || it.weeks.contains(w)) &&
+                    ScheduleView.rangesOverlap(begin, length, it.begin, it.length)
+            }
+            if (hit) out.add(w)
+        }
+        return out
+    }
+
+    /** 弹窗里每一个重叠对象一行：说明 + 交换前后 / 只看本课 / 都显示（改动立即反映到后面的课表）。 */
+    private fun overlapCard(lesson: Lesson, other: Lesson): View {
+        val pair = ScheduleView.pairId(scheduleView.keyOf(lesson), scheduleView.keyOf(other))
+        val myKey = scheduleView.keyOf(lesson)
+        val otherKey = scheduleView.keyOf(other)
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = GradientDrawable().apply {
+                setColor(0xFFFFF3F2.toInt())
+                cornerRadius = dp(8).toFloat()
+                setStroke(dp(1), 0xFFFF7B72.toInt())
+            }
+        }
+        card.addView(TextView(this).apply {
+            text = "与「${currentDisplayName(other)}」 第${other.beginSection}~${other.beginSection + other.length - 1}节 重叠"
+            textSize = 12f
+            setTextColor(0xFF555555.toInt())
+        })
+        val stateTv = TextView(this).apply {
+            textSize = 11f
+            setTextColor(0xFFD9363E.toInt())
+            setPadding(0, dp(3), 0, 0)
+        }
+        fun refreshState() {
+            val front = prefs.getString("overlapFront_$pair", null)
+                ?: ScheduleView.defaultFrontKey(lesson, other)
+            val mode = prefs.getString("overlapMode_$pair", null)
+            stateTv.text = when {
+                mode == myKey -> "当前：只显示本课"
+                mode == otherKey -> "当前：只显示对方"
+                front == myKey -> "当前：本课在前（淡）· 对方在后（深）"
+                else -> "当前：对方在前（淡）· 本课在后（深）"
+            }
+        }
+        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun addBtn(t: String, color: Int, act: () -> Unit) {
+            btnRow.addView(colorButton(t, color, act),
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    .apply { setMargins(0, dp(6), dp(6), 0) })
+        }
+        addBtn("交换前后", 0xFF3B6EB5.toInt()) {
+            val cur = prefs.getString("overlapFront_$pair", null)
+                ?: ScheduleView.defaultFrontKey(lesson, other)
+            val next = if (cur == myKey) otherKey else myKey
+            prefs.edit().putString("overlapFront_$pair", next).apply()
+            reloadOverlap(); refreshState()
+        }
+        addBtn("只看本课", 0xFFE64A19.toInt()) {
+            prefs.edit().putString("overlapMode_$pair", myKey).apply()
+            reloadOverlap(); refreshState()
+        }
+        addBtn("都显示", 0xFF7E57C2.toInt()) {
+            prefs.edit().remove("overlapMode_$pair").apply()
+            reloadOverlap(); refreshState()
+        }
+        refreshState()
+        card.addView(stateTv)
+        card.addView(btnRow)
+        return card
+    }
+
+    /**
+     * 上课周次选择弹窗（仿正方课表）：上方 5 列周次格子，可点选、可按住滑动连续多选 / 连续取消；
+     * 下方 单周 / 双周 / 全选 / 本周 四个快捷单选，默认落在“本周”。
+     */
+    private fun showWeekPickerDialog(
+        maxWeek: Int, currentWeek: Int, initial: List<Int>,
+        candidateDay: Int, candidateBegin: Int, candidateLength: Int, excludeId: Long?,
+        onDone: (List<Int>) -> Unit
+    ) {
+        val dlg = Dialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(10), dp(8), dp(12))
+        }
+
+        // 顶部：取消 / 标题 / 确定
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val cancelTv = TextView(this).apply {
+            text = "取消"; textSize = 15f; setTextColor(0xFF3C9BFA.toInt())
+            setPadding(0, dp(6), dp(6), dp(6))
+        }
+        val titleTv = TextView(this).apply {
+            text = "上课周次"; textSize = 17f; setTextColor(0xFF222222.toInt())
+            gravity = Gravity.CENTER
+        }
+        val okTv = TextView(this).apply {
+            text = "确定"; textSize = 15f; setTextColor(0xFF3C9BFA.toInt())
+            setPadding(dp(6), dp(6), 0, dp(6))
+        }
+        head.addView(cancelTv)
+        head.addView(titleTv, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        head.addView(okTv)
+        root.addView(head)
+
+        val startWeeks = initial.ifEmpty { (1..maxWeek).toList() }
+        val picker = WeekPickerView(this).apply {
+            this.maxWeek = maxWeek
+            setWeeks(startWeeks)
+        }
+        val pickerLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        pickerLp.setMargins(0, dp(12), 0, dp(8))
+        root.addView(picker, pickerLp)
+
+        Thread {
+            val set = conflictWeeksFor(candidateDay, candidateBegin, candidateLength, excludeId, maxWeek)
+            handler.post { picker.conflictWeeks = set }
+        }.start()
+
+        val rg = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        // RadioGroup 依赖子 View 的 id 管理选中状态，无 id 时点击无效
+        fun radio(t: String) = RadioButton(this).apply {
+            text = t; textSize = 13f; id = View.generateViewId()
+        }
+        val rbOdd = radio("单周")
+        val rbEven = radio("双周")
+        val rbAll = radio("全选")
+        val rbCur = radio("本周")
+        rg.addView(rbOdd); rg.addView(rbEven); rg.addView(rbAll); rg.addView(rbCur)
+        root.addView(rg, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            .apply { setMargins(0, dp(4), 0, 0) })
+
+        // 初始单选状态：按当前选中的集合反推是哪种快捷方式
+        when {
+            startWeeks.size == maxWeek -> rbAll.isChecked = true
+            startWeeks == listOf(currentWeek) -> rbCur.isChecked = true
+            startWeeks.containsAll((1..maxWeek).filter { it % 2 == 1 }) &&
+                    !startWeeks.any { it % 2 == 0 } -> rbOdd.isChecked = true
+            startWeeks.containsAll((1..maxWeek).filter { it % 2 == 0 }) &&
+                    !startWeeks.any { it % 2 == 1 } -> rbEven.isChecked = true
+        }
+
+        // 手动改动格子 → 取消下方四选一
+        picker.onChanged = { rg.clearCheck() }
+        rg.setOnCheckedChangeListener { _, id ->
+            val weeks = when (id) {
+                rbOdd.id -> (1..maxWeek).filter { it % 2 == 1 }
+                rbEven.id -> (1..maxWeek).filter { it % 2 == 0 }
+                rbAll.id -> (1..maxWeek).toList()
+                rbCur.id -> listOf(currentWeek)
+                else -> null
+            }
+            if (weeks != null) picker.setWeeks(weeks)
+        }
+
+        cancelTv.setOnClickListener { dlg.dismiss() }
+        okTv.setOnClickListener {
+            val weeks = picker.weeks().filter { it in 1..maxWeek }
+            if (weeks.isEmpty()) {
+                Toast.makeText(this, "请至少选择一周", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            onDone(weeks)
+            dlg.dismiss()
+        }
+
+        dlg.window?.setBackgroundDrawable(GradientDrawable().apply {
+            setColor(0xFFF7FBFF.toInt())
+            cornerRadius = dp(16).toFloat()
+        })
+        dlg.setContentView(root)
+        // 屏幕窄时弹窗铺满宽度，格子才够大
+        dlg.window?.setLayout((resources.displayMetrics.widthPixels * 0.94f).toInt(),
+            android.view.WindowManager.LayoutParams.WRAP_CONTENT)
+        dlg.show()
+    }
+
+    /** 自定义课程增删改后：重渲染当前周、同步桌面组件、提示。 */
+    private fun afterCustomChanged(msg: String) {
+        val w = viewWeek
+        if (!showCachedWeek(w)) refreshDisplay()
+        ScheduleWidgetProvider.updateAll(this)
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     }
 
     /** 点击课程块弹出非全屏悬浮窗。 */
@@ -696,10 +1079,20 @@ class MainActivity : Activity() {
             setTextColor(0xFF17365D.toInt())
             typeface = Typeface.DEFAULT_BOLD
         })
-        val detail = "星期${lesson.dayOfWeek}  第${lesson.beginSection}~${lesson.beginSection + lesson.length - 1}节\n" +
-                "位置：${lesson.location}\n老师：${lesson.teacher.ifEmpty { "—" }}\n周次：${lesson.weeks}"
+        val customId = CustomLessons.idOf(lesson)
+        val weekText = if (customId != null) "自定义课程 · " + (CustomLessons.load(prefs)
+            .firstOrNull { it.id == customId }?.let { CustomLessons.weeksText(it.weeks) } ?: "")
+        else lesson.weeks
+        // 详情：没填的行就不显示（位置/老师为空时整行省掉）
+        val detailLines = ArrayList<String>()
+        detailLines.add("星期${lesson.dayOfWeek}  第${lesson.beginSection}~${lesson.beginSection + lesson.length - 1}节")
+        val locText = currentDisplayLoc(lesson).trim()
+        if (locText.isNotEmpty()) detailLines.add("位置：$locText")
+        val teacherText = lesson.teacher.trim()
+        if (teacherText.isNotEmpty()) detailLines.add("老师：$teacherText")
+        detailLines.add("周次：$weekText")
         root.addView(TextView(this).apply {
-            text = detail
+            text = detailLines.joinToString("\n")
             textSize = 13f
             setTextColor(0xFF555555.toInt())
             setLineSpacing(0f, 1.3f)
@@ -775,6 +1168,16 @@ class MainActivity : Activity() {
         }
         root.addView(colorScroll)
         refreshSwatches()
+        // 与别的课重叠时：红框 + 前后顺序 / 只显示哪节，都可在这里切换
+        val others = overlapsOf(lesson)
+        if (others.isNotEmpty()) {
+            root.addView(fieldLabel("重叠课程（红框 · 可切换显示）"))
+            for (o in others) {
+                root.addView(overlapCard(lesson, o), LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    .apply { setMargins(0, 0, 0, dp(6)) })
+            }
+        }
         // 三个操作按钮放一行
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         fun addAction(t: String, color: Int, act: () -> Unit) {
@@ -793,11 +1196,14 @@ class MainActivity : Activity() {
             ScheduleWidgetProvider.updateAll(this)   // 改名/位置/颜色保存后同步组件
             dlg.dismiss()
         }
-        addAction("强调取消", 0xFFFF9800.toInt()) {
-            ignoreChange(keyOf(lesson), lesson.location)
-            refreshDisplay()
-            ScheduleWidgetProvider.updateAll(this)   // 取消强调后同步组件
-            dlg.dismiss()
+        // 手动添加的课程：在弹窗里提供编辑 / 删除
+        if (customId != null) {
+            addAction("编辑/删除", 0xFF7E57C2.toInt()) {
+                dlg.dismiss()
+                CustomLessons.load(prefs).firstOrNull { it.id == customId }?.let { c ->
+                    showAddLessonDialog(c.day, c.begin, c)
+                }
+            }
         }
         val btnLp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
@@ -808,7 +1214,9 @@ class MainActivity : Activity() {
             setColor(0xAAFFFFFF.toInt())
             cornerRadius = dp(20).toFloat()
         })
-        dlg.setContentView(root)
+        // 内容可能变长（多了重叠控制），套一层 ScrollView 免得小屏放不下
+        val sv = ScrollView(this).apply { addView(root) }
+        dlg.setContentView(sv)
         dlg.show()
     }
 

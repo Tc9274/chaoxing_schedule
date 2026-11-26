@@ -23,7 +23,7 @@ import javax.crypto.Cipher
  *
  * 流程：学号+密码（RSA 加密）登录 → 拉整学期课表 → 按 zcd 周次过滤成"某一周"的课表。
  * 输出统一转换为与超星同构的 JSON（result=1 / data.curriculum / data.lessonArray），
- * 因此现有缓存、ScheduleApi.parse、强调、桌面组件全部可直接复用。
+ * 因此现有缓存、ScheduleApi.parse、桌面组件全部可直接复用。
  */
 object JwxtApi {
 
@@ -39,13 +39,19 @@ object JwxtApi {
             "(KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"
 
     /**
-     * 节次默认作息。教务系统的课表接口不返回上下课时间，这里给一份默认表；
-     * 若学校作息不同，改这里即可（1 节对应下标 0）。
+     * 作息表接口（正方“上课时段”）：返回每节的 jcmc（节次）、qssj / jssj（起止时间）。
+     * 需要 xnm、xqm、xqh_id（校区，取自课表返回的 xsxx.xqh1）。
+     */
+    private const val SJ_URL = "$BASE/jwglxt/jzgl/skxxMobile_cxRsdjc.html"
+
+    /**
+     * 节次默认作息（滨海校区实测口径，共 11 节）。联网拿到作息表后以接口数据为准，
+     * 这里只作离线兜底（1 节对应下标 0）。
      */
     val DEFAULT_SECTION_TIMES = listOf(
-        "08:00-08:45", "08:50-09:35", "09:55-10:40", "10:45-11:30",
-        "13:30-14:15", "14:20-15:05", "15:25-16:10", "16:15-17:00",
-        "18:30-19:15", "19:20-20:05", "20:10-20:55", "21:00-21:45"
+        "08:40-09:20", "09:25-10:05", "10:25-11:05", "11:10-11:50",
+        "13:30-14:10", "14:15-14:55", "15:15-15:55", "16:00-16:40",
+        "18:30-19:10", "19:15-19:55", "20:00-20:40"
     )
 
     init {
@@ -393,7 +399,88 @@ object JwxtApi {
             .putString("jwxt_xnm", xnm)
             .putString("jwxt_xqm", xqm)
             .apply()
+        // 校区 ID（作息表接口必填）。课表返回里 xqh1 形如 "4,"，挂在 xsxx 或每条 kbList 上
+        val xqh = jo.optJSONObject("xsxx")?.optString("xqh1", "")?.takeIf { it.isNotBlank() }
+            ?: jo.optJSONArray("kbList")?.optJSONObject(0)?.optString("xqh1", "") ?: ""
+        xqh.split(",").firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            prefs.edit().putString("jwxt_xqh_id", it).apply()
+        }
         return jo
+    }
+
+    /**
+     * 拉取本学期作息表（每节上下课时间），落盘 section_times_json。
+     * 与周次表同属“学期级”数据：完全更新时必拉，普通刷新只在本地没有时补拉。
+     */
+    fun fetchSectionTimes(prefs: SharedPreferences, cookie: String = ""): Boolean {
+        return try {
+            val ck = cookie.ifEmpty { ensureLogin(prefs) }
+            val (defXnm, defXqm) = semesterParams()
+            val xnm = prefs.getString("jwxt_xnm", "")?.takeIf { it.isNotBlank() } ?: defXnm
+            val xqm = prefs.getString("jwxt_xqm", "")?.takeIf { it.isNotBlank() } ?: defXqm
+            val xqh = prefs.getString("jwxt_xqh_id", "")?.trim() ?: ""
+            if (xqh.isEmpty()) {
+                Log.d(TAG, "sectionTimes 跳过：还没有校区 ID（先拉一次课表）")
+                return false
+            }
+            val raw = httpPost(SJ_URL,
+                "xnm=$xnm&xqm=$xqm&xqh_id=$xqh", HOME, cookie = ck)
+            val arr = parseTimeArray(raw) ?: return false
+            if (arr.length() == 0) return false
+            prefs.edit()
+                .putString("section_times_json", raw)
+                .putLong("section_times_update", System.currentTimeMillis())
+                .apply()
+            Log.d(TAG, "sectionTimes ${arr.length()} 节")
+            true
+        } catch (e: Exception) {
+            Log.d(TAG, "sectionTimes fail: ${e.message}")
+            false
+        }
+    }
+
+    /** 返回的可能是数组，也可能包在 items/data/rows 里。 */
+    private fun parseTimeArray(raw: String?): JSONArray? {
+        val txt = raw?.trim() ?: return null
+        if (txt.isEmpty()) return null
+        return try {
+            if (txt.startsWith("[")) JSONArray(txt)
+            else {
+                val jo = JSONObject(txt)
+                jo.optJSONArray("items") ?: jo.optJSONArray("data") ?: jo.optJSONArray("rows")
+            }
+        } catch (e: Exception) { null }
+    }
+
+    /** "08:40:00" → "08:40"；异常值原样返回截断后的前 5 位。 */
+    private fun hm(t: String): String {
+        val s = t.trim()
+        if (s.length >= 5) return s.substring(0, 5)
+        return ""
+    }
+
+    /**
+     * 当前生效的节次作息表：优先本地接口数据，缺失时用默认表。
+     * @return (节次, "起-止")
+     */
+    fun sectionTimes(prefs: SharedPreferences): List<Pair<Int, String>> {
+        val raw = prefs.getString("section_times_json", null)
+        if (!raw.isNullOrBlank()) {
+            val arr = parseTimeArray(raw)
+            if (arr != null && arr.length() > 0) {
+                val out = ArrayList<Pair<Int, String>>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val no = o.optString("jcmc").toIntOrNull()?.takeIf { it > 0 } ?: (i + 1)
+                    val q = hm(o.optString("qssj"))
+                    val j = hm(o.optString("jssj"))
+                    if (q.isEmpty() || j.isEmpty()) continue
+                    out.add(no to "$q-$j")
+                }
+                if (out.isNotEmpty()) return out.sortedBy { it.first }
+            }
+        }
+        return DEFAULT_SECTION_TIMES.mapIndexed { i, s -> (i + 1) to s }
     }
 
     /**
@@ -480,12 +567,30 @@ object JwxtApi {
         return rq.split("/").firstOrNull()?.trim()?.takeIf { it.length == 10 }
     }
 
+    /** 每周周一的日期映射（week -> yyyy-MM-dd），来自本地周次表；用于表头日期与课程日期缺失时的兜底。 */
+    fun weekStartMap(prefs: SharedPreferences): Map<Int, String> {
+        val raw = prefs.getString("week_index_json", null) ?: return emptyMap()
+        val out = HashMap<Int, String>()
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val zs = o.optInt("zs", 0)
+                val start = o.optString("rq").split("/").firstOrNull()?.trim() ?: ""
+                if (zs > 0 && start.length == 10) out[zs] = start
+            }
+        } catch (e: Exception) { }
+        return out
+    }
+
     /**
      * 全量刷新：登录一次、拉整学期，然后生成 1..maxWeek 的每周缓存。
      * @return (当前真实周, 总周数)；失败抛异常。
      */
     fun refreshAll(prefs: SharedPreferences): Pair<Int, Int> {
         val kb = fetchSemester(prefs)
+        // 学期级数据一起拿全：节次作息 + 周次表
+        fetchSectionTimes(prefs)
         val kbList = kb.optJSONArray("kbList") ?: JSONArray()
         val idxArr = fetchWeekIndex(prefs)
         val maxWeek = maxOf(maxWeekOf(kbList), maxZcOf(idxArr)).coerceAtLeast(1)
@@ -520,6 +625,9 @@ object JwxtApi {
         val kb = fetchSemester(prefs)
         if (prefs.getString("week_index_json", null).isNullOrBlank()) {
             fetchWeekIndex(prefs)
+        }
+        if (prefs.getString("section_times_json", null).isNullOrBlank()) {
+            fetchSectionTimes(prefs)
         }
         val kbList = kb.optJSONArray("kbList") ?: JSONArray()
         val idxArr = try {
@@ -577,7 +685,8 @@ object JwxtApi {
             val (begin, len) = parseSection(sectionStr(it))
             if (begin > 0) maxSection = maxOf(maxSection, begin + len - 1)
         }
-        val timeCount = maxOf(DEFAULT_SECTION_TIMES.size, maxSection).coerceAtLeast(1)
+        val timeCount = maxOf(sectionTimes(prefs).size, maxSection).coerceAtLeast(1)
+        val times = sectionTimes(prefs)
 
         val lessonArray = JSONArray()
         for (i in 0 until kbList.length()) {
@@ -604,7 +713,7 @@ object JwxtApi {
 
         val timeConfig = JSONArray()
         for (i in 0 until timeCount) {
-            timeConfig.put(DEFAULT_SECTION_TIMES.getOrElse(i) { "" })
+            timeConfig.put(times.getOrNull(i)?.second ?: "")
         }
         val campusArr = JSONArray()
         campusArr.put(JSONObject().put("name", "默认").put("timeConfig", timeConfig))

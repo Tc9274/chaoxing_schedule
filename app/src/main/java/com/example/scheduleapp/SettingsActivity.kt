@@ -230,6 +230,8 @@ class SettingsActivity : Activity() {
         if (raw != null) {
             try {
                 previewData = ScheduleApi.parse(raw)
+                // 预览与主界面一致：表头日期同样用周次表的周一日期兜底
+                preview.setWeekStarts(JwxtApi.weekStartMap(prefs))
                 preview.setData(previewData!!, todayDayOfWeek())
                 refreshPreview()
             } catch (e: Exception) {
@@ -392,7 +394,7 @@ class SettingsActivity : Activity() {
                 }
                 val pb = updateProgress ?: return@setOnClickListener
                 pb.visibility = View.VISIBLE
-                pb.text = "正在完全更新（课表 + 周次）…"
+                pb.text = "正在完全更新（课表 + 周次 + 作息）…"
                 Thread {
                     try {
                         val (cur, maxW) = JwxtApi.refreshAll(prefs)
@@ -420,7 +422,7 @@ class SettingsActivity : Activity() {
             visibility = View.GONE
         }.also { updateProgress = it }, lpWithMargin(0, 0, 0, dp(2)))
         root.addView(TextView(this).apply {
-            text = "每天自动完全更新（课表 + 周次），并同步桌面组件。"
+            text = "每天自动完全更新（课表 + 周次 + 作息），并同步桌面组件。"
             textSize = 13f
             setTextColor(Color.parseColor("#666666"))
             setLineSpacing(0f, 1.3f)
@@ -579,6 +581,7 @@ class SettingsActivity : Activity() {
             prefs.getBoolean("show_sun", true))
         preview.setTimeWidth(prefs.getFloat("time_w", dp(58).toFloat()))
         preview.setTimeTwoLine(prefs.getBoolean("time_two_line", true))
+        preview.setShowHeaderDate(prefs.getBoolean("show_header_date", true))
         preview.setTextColor(when (prefs.getInt("text_color", 1)) {
             0 -> 0xFF000000.toInt()
             2 -> 0xFF9E9E9E.toInt()
@@ -767,6 +770,10 @@ class SettingsActivity : Activity() {
         if (!prefs.contains("show_sun")) e.putBoolean("show_sun", true)
         if (!prefs.contains("time_two_line")) e.putBoolean("time_two_line", true)
         if (!prefs.contains("text_color")) e.putInt("text_color", 1)
+        // 每日自动刷新：默认开启、默认 0 点；旧版默认 08:00 一律迁到 00:00
+        if (!prefs.contains("daily_refresh_enabled")) e.putBoolean("daily_refresh_enabled", true)
+        val dailyT = prefs.getString("daily_refresh_time", null)
+        if (dailyT == null || dailyT == "08:00") e.putString("daily_refresh_time", "00:00")
         e.apply()
     }
 
